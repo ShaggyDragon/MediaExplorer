@@ -346,8 +346,10 @@ function renderTreeNode(parent, r) {
     // the caret (▸) still closes what this opened.
     if (n._kids && n._kids.hidden) await ensureNodeOpen(n, r.id);
   };
-  if (!isZip) n.oncontextmenu = e => showCtx(e, { loc: state.loc, parent: r.id, name: r.name,
-                                                  kind: "dir", nodeId: r.id });
+  // Zips get the same menu as folders do, minus what does not apply (owner, v1.0.1):
+  // right-clicking one in the tree used to fall through to the browser's own menu.
+  n.oncontextmenu = e => showCtx(e, { loc: state.loc, parent: r.id, name: r.name,
+                                     kind: isZip ? "zip" : "dir", nodeId: r.id });
   if (!isZip) {
     const caret = n.querySelector(".tw");
     if (caret) caret.onclick = e => { e.stopPropagation(); toggleNode(n, r.id); };
@@ -1567,7 +1569,9 @@ function tile(it) {
     box.appendChild(mosaicTile(it));
     if (it.has_video) box.appendChild(span("zipwarn", ICON.warn, "contains video"));
     cell.onclick = () => openZip(it.id, it.name);
-    cell.oncontextmenu = e => showCtx(e, { loc: state.loc, parent: it.id, kind: "dir", nodeId: it.id, name: it.name });
+    // kind "zip", not "dir": a zip browses like a folder but the menu must not offer to
+    // scan subfolders or build filmstrips in it -- zips have none (owner, v1.0.1)
+    cell.oncontextmenu = e => showCtx(e, { loc: state.loc, parent: it.id, kind: "zip", nodeId: it.id, name: it.name });
   }
   return cell;
 }
@@ -2635,6 +2639,9 @@ function showCtx(e, target) {
   const m = $("#ctxmenu");
   const kind = !target ? "none" : (target.parent === null ? "folder" : target.kind);
   const noun = { video: "video", image: "picture", zip: "zip" }[kind] || "item";
+  // A zip is not a folder, however much it browses like one: it has no subfolders to
+  // recurse into, no filmstrips to build, and no "folder holding it" worth naming.
+  const isZip = kind === "zip";
   const isFolderish = kind === "folder" || kind === "dir";
   const canBuild = kind === "video" || isFolderish;
 
@@ -2654,14 +2661,17 @@ function showCtx(e, target) {
                                : "Open the picture with its camera details and embedded text beside it";
 
   const sc = $("#ctx-scan");
-  sc.textContent = isFolderish ? "Scan this folder" : `Scan the folder holding this ${noun}`;
-  sc.title = isFolderish
-    ? "Pick up new files here and build the thumbnails they need"
-    : `Pick up new files in the folder that holds this ${noun}, and build its thumbnails`;
+  sc.textContent = isZip ? "Scan this zip"
+    : isFolderish ? "Scan this folder" : `Scan the folder holding this ${noun}`;
+  sc.title = isZip
+    ? "Re-read this archive: pick up new entries and build the thumbnails they need"
+    : isFolderish
+      ? "Pick up new files here and build the thumbnails they need"
+      : `Pick up new files in the folder that holds this ${noun}, and build its thumbnails`;
   /* A clip's "scan its folder" line is gone (owner, v0.1.235): the folder is right there
      in the left pane and the toolbar Scan button does the same for the folder you are
      looking at, so the line only added a second way to do somebody else's job. */
-  sc.hidden = !isFolderish;
+  sc.hidden = !(isFolderish || isZip);
 
   const sd = $("#ctx-scan-deep");
   sd.hidden = !isFolderish;
@@ -2699,7 +2709,8 @@ function showCtx(e, target) {
   rb.title = kind === "video"
     ? "Re-encode this clip's thumbnails — back to the two-image preview"
     : kind === "image" ? "Re-encode this picture's thumbnail"
-      : "Re-encode the thumbnails that already exist (use after a tile style change)";
+      : isZip ? "Re-encode every thumbnail in this archive (use after a tile style change)"
+        : "Re-encode the thumbnails that already exist (use after a tile style change)";
 
   const rd = $("#ctx-rebuild-deep");
   rd.hidden = !isFolderish;
@@ -2810,12 +2821,14 @@ async function ctxScan(deep, zips) {
   $("#ctxmenu").hidden = true;
   if (!t) return;
   // the log should say a person picked this from the tree, not that a scan appeared
-  const why = deep && zips ? "menu-deep-zips" : deep ? "menu-deep" : "menu";
+  const why = t.kind === "zip" ? "menu-zip"
+    : deep && zips ? "menu-deep-zips" : deep ? "menu-deep" : "menu";
   const q = [deep ? "deep=1" : null, zips ? "zips=1" : null, `why=${why}`]
     .filter(Boolean).join("&");
-  // A node target goes through rescan: the server knows a zip or a video is not a
-  // folder and scans the folder that holds it. Only the location root has no id.
-  const url = t.nodeId != null ? `/api/rescan/${t.nodeId}` + (q ? "?" + q : "")
+  // A zip is scanned as itself (/api/scan?zip=), not through rescan: rescan maps a node
+  // to the folder that holds it, which for an archive is the other thing entirely.
+  const url = t.kind === "zip" ? `/api/scan?loc=${t.loc}&zip=${t.nodeId}&why=${why}`
+            : t.nodeId != null ? `/api/rescan/${t.nodeId}` + (q ? "?" + q : "")
             : t.parent != null ? `/api/rescan/${t.parent}` + (q ? "?" + q : "")
             : `/api/scan?loc=${t.loc}&` + q;
   try { await api(url, { method: "POST" }); } catch (e) { return; }
