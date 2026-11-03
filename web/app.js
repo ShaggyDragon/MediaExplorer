@@ -3207,3 +3207,102 @@ loadPrefs().then(buildTreeRoots).then(() => {
   checkBuild();                                             // never run a stale client
   setInterval(checkBuild, 60000);
 });
+
+/* ================= phones, folded screens and touch (v1.0.2) =================
+   Two problems, one shell: the desktop split (tree + grid side by side) does not fit a
+   phone, and a fold seam is a viewport change Chromium does not always take -- the page
+   stays laid out for the folded width and the rest of the unfolded screen is bare
+   canvas. The drawer is CSS; this is the plumbing, plus the touch gestures the desktop
+   mouse never needed. */
+const NARROW_MQ = matchMedia("(max-width: 820px), (pointer: coarse) and (max-width: 1024px)");
+const narrowNow = () => NARROW_MQ.matches;
+
+function syncTopbarH() {
+  const h = $("#topbar").offsetHeight;
+  if (h) document.documentElement.style.setProperty("--topbar-h", h + "px");
+}
+
+/* Nothing in CSS can rescue a stale layout viewport, so compare what the page thinks it
+   has with what the screen actually is. Only when the SCREEN IS WIDER: pinch-zoom makes
+   the visual viewport smaller, and rewriting the meta there would shrink the layout to
+   the zoom box. */
+function healViewport() {
+  const vv = window.visualViewport;
+  const real = Math.round((vv && vv.width) || window.innerWidth || 0);
+  const laid = document.documentElement.clientWidth || 0;
+  if (!real || !laid || real <= laid + 24) return;
+  const m = document.querySelector('meta[name="viewport"]');
+  if (!m) return;
+  m.setAttribute("content", "width=" + real + ", initial-scale=1");
+  setTimeout(() => {                       // back to device-width for the next fold
+    m.setAttribute("content", "width=device-width, initial-scale=1");
+    syncTopbarH();
+  }, 400);
+}
+
+function setTree(open) {
+  document.body.classList.toggle("tree-open", open);
+  $("#tree-scrim").hidden = !open;
+  const b = $("#btn-tree");
+  b.classList.toggle("on", open);
+  b.setAttribute("aria-expanded", open ? "true" : "false");
+}
+$("#btn-tree").onclick = () => setTree(!document.body.classList.contains("tree-open"));
+$("#tree-scrim").onclick = () => setTree(false);
+/* A drawer over the grid swallows the tap that navigates: close it on any tree click. */
+$("#tree").addEventListener("click", () => { if (narrowNow()) setTree(false); });
+addEventListener("hashchange", () => setTree(false));
+
+let tPress = 0, suppressClick = 0;
+/* Chrome Android never fires contextmenu on a plain div, so right-click was unreachable
+   by touch. A long press synthesises one at the finger -- and the touchend that follows
+   would also click whatever is under it (often a line of the menu that just opened), so
+   the next click is swallowed. */
+document.addEventListener("touchstart", e => {
+  if (e.touches.length !== 1) { clearTimeout(tPress); tPress = 0; return; }
+  const el = e.target.closest && e.target.closest(".cell, .tnode, .znode");
+  if (!el) return;
+  const t = e.touches[0], x = t.clientX, y = t.clientY;
+  tPress = setTimeout(() => {
+    tPress = 0;
+    suppressClick = performance.now() + 350;
+    el.dispatchEvent(new MouseEvent("contextmenu",
+      { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+  }, 450);
+}, { passive: true });
+const endPress = () => { if (tPress) { clearTimeout(tPress); tPress = 0; } };
+document.addEventListener("touchmove", endPress, { passive: true });
+document.addEventListener("touchend", endPress);
+document.addEventListener("touchcancel", endPress);
+document.addEventListener("click", e => {
+  if (performance.now() < suppressClick) { e.stopPropagation(); e.preventDefault(); }
+}, true);
+
+/* Swipe the viewer: sideways pages, down closes. Not while zoomed -- there a drag pans. */
+let vSwipe = null;
+$("#viewer").addEventListener("touchstart", e => {
+  if (e.touches.length !== 1 || zoom.s > 1.001) { vSwipe = null; return; }
+  const t = e.touches[0];
+  vSwipe = { x: t.clientX, y: t.clientY, t: Date.now() };
+}, { passive: true });
+$("#viewer").addEventListener("touchend", e => {
+  if (!vSwipe) return;
+  const t = e.changedTouches[0];
+  const dx = t.clientX - vSwipe.x, dy = t.clientY - vSwipe.y, dt = Date.now() - vSwipe.t;
+  vSwipe = null;
+  if (dt > 900) return;                      // a slow drag is a pan, not a swipe
+  if (Math.abs(dx) > Math.abs(dy)) {
+    if (Math.abs(dx) < 55) return;
+    suppressClick = performance.now() + 350;   // a swipe is not a tap-to-close
+    viewerStep(dx < 0 ? 1 : -1);
+  } else if (dy > 110) {
+    suppressClick = performance.now() + 350;
+    closeViewer();
+  }
+}, { passive: true });
+
+syncTopbarH();
+addEventListener("resize", () => { syncTopbarH(); healViewport(); });
+addEventListener("orientationchange", () => setTimeout(() => { syncTopbarH(); healViewport(); }, 250));
+if (window.visualViewport) window.visualViewport.addEventListener("resize", healViewport);
+addEventListener("pageshow", () => { syncTopbarH(); healViewport(); });

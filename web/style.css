@@ -22,7 +22,7 @@ body {
 
 /* topbar */
 #topbar {
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   padding: 8px 12px; background: var(--bg2);
   border-bottom: 1px solid var(--border); flex: 0 0 auto;
 }
@@ -33,7 +33,8 @@ body {
 #crumbs .crumb { cursor: pointer; color: var(--accent); }
 #crumbs .crumb:hover { text-decoration: underline; }
 #crumbs .sep { opacity: .5; }
-#controls { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+#controls { display: flex; align-items: center; gap: 8px; flex: 0 0 auto;
+            flex-wrap: wrap; justify-content: flex-end; }
 #controls button, .btn {
   background: var(--bg3); color: var(--fg); border: 1px solid var(--border);
   border-radius: 6px; padding: 5px 10px; cursor: pointer; font-size: 13px;
@@ -92,6 +93,9 @@ body {
   padding: 1px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   box-sizing: border-box; visibility: hidden; }
 #build-chip.on { visibility: visible; }
+/* an empty fixed slot is fine while the toolbar has one row to fill; once it wraps the
+   132px is a whole button's worth of width, so drop it (the grid strip still reports) */
+@media (max-width: 1100px) { #build-chip:not(.on) { width: 0; border: 0; padding: 0; } }
 #build-chip.stalled { color: #d9534f; border-color: #d9534f; }
 #scan-bar { display: inline-block; width: 90px; height: 6px; background: var(--bg3);
   border-radius: 3px; position: relative; overflow: hidden; }
@@ -602,3 +606,91 @@ svg.ic { width: 16px; height: 16px; flex: 0 0 auto; display: inline-block; verti
   border: 1px solid #2a2f38; background: rgba(20, 22, 27, .92);
   color: #aab2bf; font: 17px/1 system-ui, sans-serif; }
 .vi-close:hover { color: #fff; border-color: #4b8bdc; background: #2f6fbd; }
+
+/* ================= phones, folded screens and touch (v1.0.2) =================
+   The desktop shell is a fixed split: tree on the left, grid filling the rest. On a
+   phone -- and on a Fold while it is folded -- that split spends a third of the width
+   on a pane you are not reading, and the toolbar (crumbs + slider + six buttons) has
+   nowhere to go. Below 820px the tree becomes a drawer over the grid, opened from the
+   toolbar, and the panels stop being side bars. Desktop rules above are untouched. */
+#btn-tree { display: none; }
+
+/* The condition is "no room for a split, or a touch screen that is not a desktop":
+   a Fold unfolded is ~880px wide and still a phone's worth of reading (one pane at a
+   time, full width for the pictures), while a mouse-driven browser of the same width
+   keeps the split it has always had. */
+@media (max-width: 820px), (pointer: coarse) and (max-width: 1024px) {
+  /* --- toolbar: two rows, controls right, path on its own line below --- */
+  #topbar { flex-wrap: wrap; gap: 6px 8px; padding: 6px 8px; align-items: center; }
+  #btn-tree {
+    display: inline-flex; order: 0; flex: 0 0 auto;
+    align-items: center; justify-content: center;
+    width: 34px; height: 30px; padding: 0;
+    background: var(--bg3); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 6px; cursor: pointer;
+  }
+  #btn-tree.on { border-color: var(--accent); color: var(--accent); }
+  #btn-tree svg { width: 18px; height: 18px; }
+  /* the path shares the title row (it truncates instead of wrapping), which keeps the
+     whole header to two lines on a phone -- a row of chrome costs a row of pictures */
+  #brand { order: 1; font-size: 13px; max-width: 46%; overflow: hidden; white-space: nowrap;
+           text-overflow: ellipsis; }
+  #version { font-size: 10px; margin-left: 4px; }
+  /* the empty 132px slot the chip reserves on desktop costs a whole button here, and
+     the grid's own "Building N thumbnails…" strip already says what it would say */
+  /* it has to be allowed to be narrower than its content, or the row of buttons keeps
+     its max-content width and hangs off the screen instead of folding (360px phones) */
+  #controls { order: 3; margin-left: auto; gap: 5px; flex: 1 1 auto; min-width: 0;
+              flex-wrap: wrap; justify-content: flex-end; }
+  #build-chip { display: none; }
+  #controls button, .btn { padding: 5px 7px; font-size: 12px; }
+  #size-slider { width: 68px; }
+  #scan-progress { display: none; }        /* the Scan badge already carries the count */
+  /* the path shares the last controls row instead of claiming a row of its own: on a
+     360px phone a row costs 40px of picture */
+  #crumbs { order: 2; flex: 1 1 0; min-width: 0; font-size: 12px; overflow-x: auto;
+            white-space: nowrap; padding: 1px 0 0; scrollbar-width: none; }
+  #crumbs::-webkit-scrollbar { display: none; }
+
+  /* --- the tree, as a drawer --- */
+  #resizer { display: none; }
+  #tree-pane {
+    position: fixed; top: 0; left: 0; bottom: 0; z-index: 70;
+    width: min(330px, 88vw) !important; max-width: none;
+    padding: calc(var(--topbar-h, 44px) + 8px) 6px 14px;
+    transform: translateX(-102%); transition: transform .18s ease;
+    box-shadow: 8px 0 28px rgba(0, 0, 0, .5);
+  }
+  body.tree-open #tree-pane { transform: none; }
+  #tree-scrim { position: fixed; inset: 0; z-index: 69; background: rgba(0, 0, 0, .5); }
+  .tnode, .znode { padding: 7px 8px; font-size: 14px; }   /* finger-sized rows */
+  #btn-up { padding: 7px 10px; }
+
+  /* --- grid: never fewer than two columns of something useful --- */
+  #grid {
+    padding: 10px; gap: 12px 10px;
+    grid-template-columns: repeat(auto-fill, minmax(min(var(--tw, 220px), 42vw), 1fr));
+  }
+  .cell { touch-action: manipulation; }
+
+  /* --- info panels become sheets: a side bar on a phone is a column of 12pt text --- */
+  #viewer.info-open { padding-right: 0; }
+  #viewer.info-open img { width: 100vw; }
+  #viewer.info-open #btn-vinfo, #viewer.info-open #viewer-counter { right: 16px; }
+  .vi-panel {
+    left: 0; right: 0; top: auto; bottom: 0; width: auto !important;
+    height: min(64vh, 520px); border-left: 0; border-top: 1px solid #2a2f38;
+    border-radius: 12px 12px 0 0; box-shadow: 0 -12px 30px rgba(0, 0, 0, .5);
+    /* opaque enough that a busy picture behind it cannot bleed through the text */
+    background: #0d0f13;
+    padding: 12px 14px 26px;
+  }
+  #player.info-open #player-stage, #player.info-open #player-bar { margin-right: 0; }
+  #btn-vinfo { top: 12px; bottom: auto; }      /* out from under the thumb */
+  #player-bar { padding: 6px 10px; font-size: 13px; }
+
+  /* --- filmstrip view and menus: thumb-sized --- */
+  #film-actions { flex-wrap: wrap; gap: 6px; }
+  #ctxmenu { min-width: 0; max-width: 92vw; }
+  #ctxmenu > * { padding: 10px 14px; font-size: 14px; }
+}
