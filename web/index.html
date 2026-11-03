@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MediaExplorer</title>
+<link rel="stylesheet" href="/static/style.css?v={{VERSION}}">
+<link rel="icon" href="/static/favicon.svg">
+</head>
+<body>
+<header id="topbar">
+  <div id="brand"><span id="app-name">MediaExplorer</span>
+    <span id="version">v{{VERSION}}</span></div>
+  <nav id="crumbs"></nav>
+  <div id="controls">
+    <span id="scan-progress"><span id="scan-bar"></span> <span id="scan-text"></span></span>
+    <button id="btn-sort" title="Toggle sort order">Name</button>
+    <input id="size-slider" type="range" min="110" max="420" step="10" title="Thumbnail size">
+    <button id="btn-pin" title="Remember this folder's size, sort and animation  (P)"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6l-1 5 3.5 3.5H6.5L10 9z"/><path d="M12 12.5V20"/></svg></button>
+    <button id="btn-favs" title="Favourites" aria-haspopup="menu"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></svg></button>
+    <button id="btn-scan" title="Scan this folder: pick up new files and build the thumbnails they need  (S)">
+      <span id="scan-label">Scan</span> <span id="scan-badge" class="badge">0</span></button>
+    <span id="build-chip"></span>
+    <button id="btn-frames" title="Video frame preview"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 5v14M17 5v14M3 9.5h4M3 14.5h4M17 9.5h4M17 14.5h4"/></svg></button>
+    <button id="btn-theme" title="Toggle light/dark"></button>
+  </div>
+</header>
+<div id="main">
+  <aside id="tree-pane">
+    <div id="tree-head">
+      <button id="btn-up" type="button" disabled title="Up one folder  (Backspace or Alt+↑)">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"
+          fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+          stroke-linejoin="round"/></svg>
+        <span class="up-to">Up</span>
+      </button>
+    </div>
+    <div id="tree"></div>
+  </aside>
+  <div id="resizer"></div>
+  <section id="grid"></section>
+</div>
+
+<div id="viewer" hidden>
+  <img id="viewer-img" alt="">
+  <div id="viewer-caption"></div>
+  <div id="viewer-counter"></div>
+  <button id="btn-vinfo" type="button" title="Picture info  (I)" aria-label="Picture info">
+    <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8.2" fill="none"
+      stroke="currentColor" stroke-width="1.6"/><path d="M10 9v5" stroke="currentColor"
+      stroke-width="1.8" stroke-linecap="round"/><circle cx="10" cy="6.1" r="1.1"
+      fill="currentColor"/></svg>
+  </button>
+  <aside id="viewer-info" class="vi-panel" hidden></aside>
+</div>
+
+<div id="player" hidden>
+  <div id="player-bar">
+    <span id="player-title"></span>
+    <span id="player-actions">
+      <button id="btn-p-close" class="btn">Close</button>
+    </span>
+  </div>
+  <!-- Our own control bar instead of the native one: the native bar's fullscreen button
+       cannot be removed (Chromium ignores controlsList="nofullscreen") and its volume /
+       kebab / fullscreen buttons leave the time slider about two thirds of the width.
+       Fullscreen is still middle-click or double-click; play/pause is click or Space. -->
+  <div id="player-stage">
+    <video id="player-video" playsinline></video>
+    <div id="player-ctl">
+      <!-- two rows, like Chromium's own bar: the slider gets its own full-width row,
+           which is the only way it can be wider than the native one instead of narrower -->
+      <div class="pc-row">
+        <button id="p-play" class="pbtn" title="Play / pause (Space)">&#9654;</button>
+        <span class="ptime"><span id="p-time">0:00</span> / <span id="p-dur">0:00</span></span>
+        <span class="pc-gap"></span>
+        <button id="p-mute" class="pbtn" title="Mute (M)"></button>
+      </div>
+      <input id="p-seek" type="range" min="0" max="1000" step="1" value="0" aria-label="Seek">
+    </div>
+    <button id="btn-pinfo" type="button" title="Video info  (I)" aria-label="Video info">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8.2" fill="none"
+        stroke="currentColor" stroke-width="1.6"/><path d="M10 9v5" stroke="currentColor"
+        stroke-width="1.8" stroke-linecap="round"/><circle cx="10" cy="6.1" r="1.1"
+        fill="currentColor"/></svg>
+    </button>
+  </div>
+  <aside id="player-info" class="vi-panel" hidden></aside>
+</div>
+
+<div id="filmstrip" hidden>
+  <div id="film-head">
+    <span id="film-title"></span>
+    <span id="film-actions">
+      <a id="btn-vlc" class="btn" download>Open in VLC (.m3u)</a>
+      <a id="btn-raw" class="btn" target="_blank">Open original</a>
+      <button id="btn-film-close" class="btn">Close</button>
+    </span>
+  </div>
+  <div id="film-grid"></div>
+</div>
+
+<div id="favmenu" role="menu" hidden></div>
+
+<div id="ctxmenu" hidden>
+  <div id="ctx-info">Show info for this picture</div>
+  <div class="ctxsep" id="ctx-sep-0"></div>
+  <div id="ctx-expand">Expand all subfolders</div>
+  <div class="ctxsep" id="ctx-sep-1"></div>
+  <div id="ctx-scan">Scan this folder</div>
+  <div id="ctx-scan-deep">Scan this folder and subfolders</div>
+  <div id="ctx-scan-deep-zips">Scan this folder, subfolders and zips</div>
+  <div class="ctxsep" id="ctx-sep-2"></div>
+  <div id="ctx-frames-here">Build filmstrips in this folder</div>
+  <div id="ctx-frames">Build filmstrips in subfolders</div>
+  <div class="ctxsep" id="ctx-sep-3"></div>
+  <div id="ctx-rebuild">Re-encode thumbnails in this folder</div>
+  <div id="ctx-rebuild-deep">Re-encode thumbnails in subfolders</div>
+</div>
+
+<script src="/static/app.js?v={{VERSION}}"></script>
+</body>
+</html>

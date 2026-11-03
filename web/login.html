@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{APP_NAME}} — locked</title>
+<link rel="icon" href="/static/favicon.svg">
+<style>
+  /* deliberately standalone: this page must render before any app JS, and while the
+     library itself is refusing to serve anything else */
+  :root { --bg:#0f1115; --bg2:#171a21; --bg3:#1f242e; --fg:#e6e9ef; --fg2:#9aa3b2;
+          --border:#2a3140; --accent:#4b8bdc; --bad:#d9534f; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f5f6f8; --bg2:#ffffff; --bg3:#e9ebef; --fg:#1c2128; --fg2:#5c6672;
+            --border:#d3d8df; --accent:#2f6fbd; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--fg); display: flex; align-items: center;
+         justify-content: center; font: 14px/1.45 system-ui, "Segoe UI", Roboto, sans-serif; }
+  form { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px;
+         padding: 26px 26px 22px; width: min(340px, 88vw); box-shadow: 0 18px 40px #0006; }
+  h1 { margin: 0 0 2px; font-size: 17px; font-weight: 600; letter-spacing: .2px; }
+  .ver { color: var(--fg2); font-size: 11px; margin-bottom: 18px; }
+  label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .7px;
+          color: var(--fg2); margin-bottom: 6px; }
+  input[type=password] { width: 100%; padding: 10px 11px; border-radius: 8px; font-size: 15px;
+         background: var(--bg3); color: var(--fg); border: 1px solid var(--border); outline: none; }
+  input[type=password]:focus { border-color: var(--accent); }
+  button { margin-top: 14px; width: 100%; padding: 10px; border-radius: 8px; cursor: pointer;
+         font-size: 14px; font-weight: 600; color: #fff; background: var(--accent); border: 0; }
+  button:hover { filter: brightness(1.08); }
+  .err { margin-top: 12px; color: var(--bad); font-size: 12.5px; min-height: 16px; }
+</style>
+</head>
+<body>
+<form method="post" action="/login">
+  <h1>{{APP_NAME}}</h1>
+  <div class="ver">v{{VERSION}} — password required</div>
+  <label for="pw">Password</label>
+  <input id="pw" name="password" type="password" autocomplete="current-password"
+         autofocus required>
+  <input type="hidden" name="next" value="{{NEXT}}">
+  <button type="submit">Unlock</button>
+  <div class="err">{{ERROR}}</div>
+</form>
+</body>
+</html>

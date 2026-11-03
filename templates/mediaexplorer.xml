@@ -1,0 +1,52 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>mediaexplorer</Name>
+  <Repository>mediaexplorer:latest</Repository>
+  <Registry/>
+  <Network>bridge</Network>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support/>
+  <Project/>
+  <Overview>MediaExplorer — hierarchical image/video browser for big libraries.&#xA;
+Mount any number of shares at /media1..media8 (read-write: the .mxthumbs thumbnail store is written beside the media; a read-only share still works and falls back to the data path) and each mounted dir becomes a browsable location.&#xA;
+Rename a location with the MEDIA_N_NAME variable. Index and central packs live in the data path.&#xA;
+UI: http://[IP]:[PORT:8000]/</Overview>
+  <WebUI>http://[IP]:[PORT:8000]/</WebUI>
+  <TemplateURL/>
+  <Icon/>
+  <ExtraParams></ExtraParams>
+  <PostArgs/>
+  <Config Name="Web UI port" Target="8000" Default="8086" Mode="tcp" Description="Host port for the UI" Type="Port" Display="always" Help="" Group="primary" Order="1"/>
+  <Config Name="APP_NAME" Target="APP_NAME" Default="MediaExplorer" Mode="" Description="Name shown in the app title bar" Type="Variable" Display="always" Help="" Group="primary" Order="2"/>
+  <Config Name="data" Target="/data" Default="/mnt/user/appdata/mediaexplorer" Mode="rw" Description="Database (keep it on SSD/cache)" Type="Path" Display="always" Help="" Group="primary" Order="3"/>
+  <Config Name="media1" Target="/media1" Default="/mnt/user/Photos" Mode="rw" Description="Media share 1 (browsable location; read-write so thumbnails can be stored beside the media)" Type="Path" Display="always" Help="" Group="primary" Order="4"/>
+  <Config Name="media2" Target="/media2" Default="" Mode="rw" Description="Media share 2 (leave empty to disable)" Type="Path" Display="always" Help="" Group="primary" Order="5"/>
+  <Config Name="media3" Target="/media3" Default="" Mode="rw" Description="Media share 3 (leave empty to disable)" Type="Path" Display="always" Help="" Group="primary" Order="6"/>
+  <Config Name="media4" Target="/media4" Default="" Mode="rw" Description="Media share 4 (leave empty to disable)" Type="Path" Display="always" Help="" Group="primary" Order="7"/>
+  <Config Name="media5" Target="/media5" Default="" Mode="rw" Description="Media share 5 (leave empty to disable)" Type="Path" Display="always" Help="" Group="primary" Order="8"/>
+  <Config Name="media6" Target="/media6" Default="" Mode="rw" Description="Media share 6 (leave empty to disable)" Type="Path" Display="always" Help="" Group="primary" Order="9"/>
+  <Config Name="media7" Target="/media7" Default="" Mode="rw" Description="Media share 7 (leave empty to disable)" Type="Path" Display="always" Help="" Group="primary" Order="10"/>
+  <Config Name="media8" Target="/media8" Default="" Mode="rw" Description="Media share 8 (leave empty to disable)" Type="Path" Display="always" Help="" Group="primary" Order="11"/>
+  <Config Name="media1 name" Target="MEDIA_1_NAME" Default="Photos" Mode="" Description="Display name for /media1" Type="Variable" Display="advanced" Help="" Group="primary" Order="12"/>
+  <Config Name="media2 name" Target="MEDIA_2_NAME" Default="" Mode="" Description="Display name for /media2" Type="Variable" Display="advanced" Help="" Group="primary" Order="13"/>
+  <Config Name="media3 name" Target="MEDIA_3_NAME" Default="" Mode="" Description="Display name for /media3" Type="Variable" Display="advanced" Help="" Group="primary" Order="14"/>
+  <Config Name="media4 name" Target="MEDIA_4_NAME" Default="" Mode="" Description="Display name for /media4" Type="Variable" Display="advanced" Help="" Group="primary" Order="15"/>
+  <Config Name="media5 name" Target="MEDIA_5_NAME" Default="" Mode="" Description="Display name for /media5" Type="Variable" Display="advanced" Help="" Group="primary" Order="16"/>
+  <Config Name="media6 name" Target="MEDIA_6_NAME" Default="" Mode="" Description="Display name for /media6" Type="Variable" Display="advanced" Help="" Group="primary" Order="17"/>
+  <Config Name="media7 name" Target="MEDIA_7_NAME" Default="" Mode="" Description="Display name for /media7" Type="Variable" Display="advanced" Help="" Group="primary" Order="18"/>
+  <Config Name="media8 name" Target="MEDIA_8_NAME" Default="" Mode="" Description="Display name for /media8" Type="Variable" Display="advanced" Help="" Group="primary" Order="19"/>
+  <Config Name="MX_PACK_MODE" Target="MX_PACK_MODE" Default="adjacent" Mode="" Description="adjacent = thumbnail store beside the media; central = under the data path" Type="Variable" Display="advanced" Help="adjacent travels with the media and its backup. central writes nothing into the media tree (use it for a read-only mount or a test instance)." Group="advanced" Order="20"/>
+  <Config Name="MX_WIPE_ON_BUILD" Target="MX_WIPE_ON_BUILD" Default="0" Mode="" Description="1 = wipe every thumbnail when the app version changes (dev builds); 0 = keep the cache" Type="Variable" Display="advanced" Help="0 is the right answer once a real library is in use. Also switchable at runtime: POST /api/admin/settings {&quot;wipe_on_build&quot;: false}." Group="advanced" Order="21"/>
+  <Config Name="MX_THUMB_WORKERS" Target="MX_THUMB_WORKERS" Default="0" Mode="" Description="Thumbnail encode threads; 0 = auto from the container's CPU allowance" Type="Variable" Display="advanced" Help="Raise for faster big-folder builds; lower if it competes with ffmpeg or other containers." Group="advanced" Order="22"/>
+  <Config Name="MX_VIDEO_JOBS" Target="MX_VIDEO_JOBS" Default="0" Mode="" Description="Simultaneous ffmpeg decodes (posters/filmstrips); 0 = auto" Type="Variable" Display="advanced" Help="1 = serial." Group="advanced" Order="23"/>
+  <Config Name="MX_HWACCEL" Target="MX_HWACCEL" Default="auto" Mode="" Description="Video decode: auto / cuda (NVDEC, needs --gpus all) / none" Type="Variable" Display="advanced" Help="GPU users: set Extra Parameters to --gpus all and NVIDIA_DRIVER_CAPABILITIES=all (NVDEC needs the video capability)." Group="advanced" Order="24"/>
+  <Config Name="NVIDIA_DRIVER_CAPABILITIES" Target="NVIDIA_DRIVER_CAPABILITIES" Default="" Mode="" Description="Only for GPU decode: set to all alongside --gpus all" Type="Variable" Display="advanced" Help="Without the video capability ffmpeg reports: No device available for decoder." Group="advanced" Order="25"/>
+  <Config Name="MX_ANIM_MAX" Target="MX_ANIM_MAX" Default="500" Mode="" Description="Max videos per scan that pre-build hover filmstrips (0-500)" Type="Variable" Display="advanced" Help="Lower = faster scans on huge folders; filmstrips still build on hover." Group="advanced" Order="26"/>
+  <Config Name="MX_RESTART_TOKEN" Target="MX_RESTART_TOKEN" Default="" Mode="" Description="Secret that enables /api/admin/* (restart, runtime settings)" Type="Variable" Display="advanced" Help="Leave empty to keep the admin endpoints disabled." Group="advanced" Order="27" Required="false" Mask="true"/>
+  <Config Name="TZ" Target="TZ" Default="UTC" Mode="" Description="Time zone for dates" Type="Variable" Display="advanced" Help="" Group="advanced" Order="28"/>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User id for file access" Type="Variable" Display="advanced" Help="" Group="advanced" Order="29"/>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group id for file access" Type="Variable" Display="advanced" Help="" Group="advanced" Order="30"/>
+  <Config Name="Password protect" Target="MX_AUTH" Default="0" Mode="" Description="1 = ask for a password before the library loads (0 = open)" Type="Variable" Display="always" Help="Casual lock, not a security boundary: one shared password, remembered in a browser cookie for 30 days." Group="primary" Order="31" Required="false" Mask="false"/>
+  <Config Name="Password" Target="MX_AUTH_PASSWORD" Default="" Mode="" Description="Password asked for when Password protect is 1" Type="Variable" Display="always" Help="Changing it signs every browser out. Stored as a salted hash, never in plain text." Group="primary" Order="32" Required="false" Mask="true"/>
+</Container>
