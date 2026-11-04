@@ -430,9 +430,11 @@ async function openZip(id, name, tok) {
    You can Back, deep-link, reload-in-place, or delete trailing segments. */
 let hashGuard = false;
 let hashHold = false;      // true while a cross-zip hop paints its grid: it publishes /i itself
-let pathChain = [];        // [{id, kind}] folder/zip ids from loc root, no loc itself
+let pathChain = [];        // [{id, kind, name}] folder/zip ids from loc root, no loc itself
 function recordChain(path) {
-  pathChain = path.slice(1).map(p => ({ id: p.id, kind: p.kind || "f" }));
+  // name is carried for the scroll-hop pill: stepping back out of the first child of a
+  // folder targets the folder itself, which is only a path entry by the time we need it.
+  pathChain = path.slice(1).map(p => ({ id: p.id, kind: p.kind || "f", name: p.name }));
 }
 function buildHash() {
   let h = "#/l" + state.loc;
@@ -3424,20 +3426,65 @@ async function hopContainers(parentId) {
   return list;
 }
 
-/* The next container in tree order, or null at the far end of the library. */
-async function hopTarget(dir) {
+/* The next container in tree order, or null at the far end of the library.
+   Order is a depth-first walk of the tree, which is what the sidebar shows:
+     1. a folder you have just read through hands over to ITS OWN first folder or
+        zip (owner: "can it automatically go to each child?") -- only the folder you
+        are actually in does this, never an ancestor you merely climb out of,
+        otherwise finishing the last zip in a folder would drop you straight back
+        into its first one and the walk would circle that folder for ever;
+     2. a leaf (a zip, or a folder with no containers inside) moves to its next
+        sibling;
+     3. with no siblings left, up a level and on from there. */
+async function hopNext() {
   const chain = pathChain.slice();
   let cur = chain.pop();
   if (!cur) return null;                     // the location root has no neighbours
+  if (cur.kind === "f") {
+    const kids = await hopContainers(cur.id);
+    if (kids.length) return kids[0];          // straight down, not sideways
+  }
   for (let step = 0; step < 30 && cur; step++) {
     const sibs = await hopContainers(hopParentOf(chain));
     const want = cur.kind === "z" ? "zip" : "dir";
     const i = sibs.findIndex(x => x.id === cur.id && x.kind === want);
-    const t = i >= 0 ? sibs[i + dir] : null;
+    const t = i >= 0 ? sibs[i + 1] : null;
     if (t) return t;
     cur = chain.pop();                       // out of siblings here: climb and carry on
   }
   return null;
+}
+
+/* The mirror image: the previous container in the same depth-first order -- the
+   LAST container inside the previous sibling (so "back" lands at the end of the
+   branch before this one), or the parent when this is the first thing in it. */
+async function hopPrev() {
+  const chain = pathChain.slice();
+  let cur = chain.pop();
+  if (!cur) return null;
+  for (let step = 0; step < 30 && cur; step++) {
+    const sibs = await hopContainers(hopParentOf(chain));
+    const want = cur.kind === "z" ? "zip" : "dir";
+    const i = sibs.findIndex(x => x.id === cur.id && x.kind === want);
+    if (i > 0) {
+      let t = sibs[i - 1];
+      for (let d = 0; d < 12; d++) {          // down to the end of that branch
+        if (t.kind === "zip") break;          // (listings here use "dir"/"zip", not "f"/"z")
+        const kids = await hopContainers(t.id);
+        if (!kids.length) break;
+        t = kids[kids.length - 1];
+      }
+      return t;
+    }
+    cur = chain.pop();
+    if (!cur) return null;
+    return cur;                              // first in its folder: the folder itself
+  }
+  return null;
+}
+
+async function hopTarget(dir) {
+  return dir > 0 ? hopNext() : hopPrev();
 }
 
 async function hopGo(t, dir) {
