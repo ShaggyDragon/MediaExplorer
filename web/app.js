@@ -3351,3 +3351,176 @@ addEventListener("resize", () => { syncTopbarH(); healViewport(); });
 addEventListener("orientationchange", () => setTimeout(() => { syncTopbarH(); healViewport(); }, 250));
 if (window.visualViewport) window.visualViewport.addEventListener("resize", healViewport);
 addEventListener("pageshow", () => { syncTopbarH(); healViewport(); });
+
+/* ================= continuous scroll across folders and zips =================
+   Owner: "scrolling through zips and getting to the end — can continuing to
+   scroll move to the start of the next folder or zip? Also in reverse?"
+   A container is a folder or a zip. With the grid pinned at its bottom (or top)
+   and the wheel still turning that way, the walk steps to the next (or previous)
+   container: the current one's siblings in grid order first, then up a level and
+   on from there — which is the order the tree shows. Forward lands at the TOP of
+   the target; backward lands at its END, so a scroll up keeps reading upward.
+   Deliberate, not twitchy: nothing moves until HOP_FIRE pixels of continued
+   scrolling in one direction, the pill appears at HOP_ARM so the jump is never a
+   surprise, and any reversal or a HOP_IDLE pause forgets the debt. */
+const HOP_ARM = 160, HOP_FIRE = 560, HOP_IDLE = 900;
+let hopAcc = 0, hopDir = 0, hopTimer = 0, hopBusy = false, hopNoMore = false;
+const hopSibs = new Map();          // "loc:parent:sort" -> [{id,kind,name}]
+
+function hopPill() {
+  let el = $("#hop-hint");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "hop-hint";
+    el.hidden = true;
+    el.innerHTML = '<span class="arw"></span><span class="txt"></span><i></i>';
+    document.body.appendChild(el);
+  }
+  return el;
+}
+
+function hopReset() {
+  hopAcc = 0; hopDir = 0; hopNoMore = false;
+  const el = $("#hop-hint");
+  if (el) { el.hidden = true; el.style.setProperty("--p", "0%"); }
+  if (hopTimer) { clearTimeout(hopTimer); hopTimer = 0; }
+}
+
+/* Is the grid pinned at an edge it should be reading past? 1 bottom, -1 top, 0 no.
+   `dir` is the way the user is scrolling, and it decides a list that cannot scroll
+   at all: a folder of two zips is at its top AND its bottom, so scrolling down reads
+   on and scrolling up reads back, the same way it would in a long list. Without that
+   a hop into a short folder was a one-way door. The location root is not a container
+   and never hops. */
+function hopEdge(dir) {
+  if (!($("#viewer") && $("#viewer").hidden)) return 0;
+  if (!($("#player") && $("#player").hidden)) return 0;
+  if (state.kind !== "dir" && state.kind !== "zip") return 0;
+  const g = $("#grid");
+  if (!g) return 0;
+  const room = g.scrollHeight - g.clientHeight;
+  if (room < 80) return dir ? (dir > 0 ? 1 : -1) : 0;
+  if (g.scrollTop >= room - 2) return 1;
+  if (g.scrollTop <= 2) return -1;
+  return 0;
+}
+
+function hopParentOf(chain) {
+  const prev = chain[chain.length - 1];
+  return prev && prev.kind === "f" ? prev.id : null;      // null = the location root
+}
+
+async function hopContainers(parentId) {
+  const key = state.loc + ":" + (parentId == null ? 0 : parentId) + ":" + state.sort;
+  if (hopSibs.has(key)) return hopSibs.get(key);
+  let list = [];
+  try {
+    const d = await api(`/api/children?loc=${state.loc}&parent=${parentId == null ? 0 : parentId}` +
+                        `&sort=${state.sort}`);
+    list = (d.items || []).filter(x => x.kind === "dir" || x.kind === "zip")
+                          .map(x => ({ id: x.id, kind: x.kind, name: x.name }));
+  } catch (e) { list = []; }
+  hopSibs.set(key, list);                    // remembered: a hop back costs nothing
+  return list;
+}
+
+/* The next container in tree order, or null at the far end of the library. */
+async function hopTarget(dir) {
+  const chain = pathChain.slice();
+  let cur = chain.pop();
+  if (!cur) return null;                     // the location root has no neighbours
+  for (let step = 0; step < 30 && cur; step++) {
+    const sibs = await hopContainers(hopParentOf(chain));
+    const want = cur.kind === "z" ? "zip" : "dir";
+    const i = sibs.findIndex(x => x.id === cur.id && x.kind === want);
+    const t = i >= 0 ? sibs[i + dir] : null;
+    if (t) return t;
+    cur = chain.pop();                       // out of siblings here: climb and carry on
+  }
+  return null;
+}
+
+async function hopGo(t, dir) {
+  hopBusy = true;
+  hopReset();
+  try {
+    if (t.kind === "zip") await openZip(t.id, t.name, newNav());
+    else await openFolder(t.id, newNav());
+    const g = $("#grid");
+    const land = () => { if (g) g.scrollTop = dir > 0 ? 0 : g.scrollHeight; };
+    land();
+    requestAnimationFrame(() => { land(); requestAnimationFrame(land); });
+  } finally { hopBusy = false; }
+}
+
+async function hopFire(dir) {
+  if (hopBusy) return;
+  hopBusy = true;
+  const t = await hopTarget(dir);
+  hopBusy = false;
+  if (!t) {
+    // nothing that way: say so instead of silently eating the gesture
+    await hopArm(dir);
+    setTimeout(hopReset, 1100);
+    return;
+  }
+  await hopGo(t, dir);
+}
+
+async function hopArm(dir) {                 // the pill, before anything moves
+  const el = hopPill();
+  const t = await hopTarget(dir);
+  hopNoMore = !t;
+  el.className = t ? (dir > 0 ? "next" : "prev") : "end";
+  el.querySelector(".arw").textContent = dir > 0 ? "⇣" : "⇡";
+  el.querySelector(".txt").textContent = t
+    ? (dir > 0 ? "Next: " : "Back to: ") + t.name + (t.kind === "zip" ? "   (zip)" : "")
+    : (dir > 0 ? "End of the library" : "Start of the library");
+  el.hidden = false;
+}
+
+function hopFeed(dy) {
+  if (hopBusy || !dy) return;
+  const dir = dy > 0 ? 1 : -1;
+  const edge = hopEdge(dir);
+  if (!edge) { if (hopAcc) hopReset(); return; }
+  if ((dir > 0 && edge !== 1) || (dir < 0 && edge !== -1)) {
+    if (hopAcc) hopReset();
+    return;
+  }
+  if (hopDir !== dir) { hopAcc = 0; hopDir = dir; }
+  hopAcc += Math.abs(dy);
+  if (hopTimer) clearTimeout(hopTimer);
+  hopTimer = setTimeout(hopReset, HOP_IDLE);
+  const el = hopPill();
+  el.style.setProperty("--p", Math.min(100, (hopAcc / HOP_FIRE) * 100).toFixed(0) + "%");
+  if (hopAcc >= HOP_FIRE) { hopFire(dir); return; }
+  if (hopAcc >= HOP_ARM && el.hidden) hopArm(dir);
+}
+
+{
+  const g = $("#grid");
+  if (g) {
+    g.addEventListener("wheel", e => {
+      if (e.ctrlKey || e.metaKey) return;   // ctrl+wheel is the browser's zoom
+      hopFeed(e.deltaY);
+    }, { passive: true });
+    let ty = 0;
+    g.addEventListener("touchstart", e => { ty = e.touches[0] ? e.touches[0].clientY : 0; },
+                      { passive: true });
+    g.addEventListener("touchmove", e => {
+      const t0 = e.touches[0];
+      if (!t0) return;
+      const dy = ty - t0.clientY;           // finger up reads forward
+      ty = t0.clientY;
+      if (Math.abs(dy) > 2) hopFeed(dy);
+    }, { passive: true });
+  }
+  // Paging keys at an edge do the same thing: one press is already deliberate.
+  document.addEventListener("keydown", e => {
+    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+    if (/^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || "")) return;
+    if (e.key === "PageDown" && hopEdge(1) === 1) { e.preventDefault(); hopFire(1); }
+    else if (e.key === "PageUp" && hopEdge(-1) === -1) { e.preventDefault(); hopFire(-1); }
+  });
+}

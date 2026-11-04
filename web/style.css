@@ -694,3 +694,30 @@ svg.ic { width: 16px; height: 16px; flex: 0 0 auto; display: inline-block; verti
   #ctxmenu { min-width: 0; max-width: 92vw; }
   #ctxmenu > * { padding: 10px 14px; font-size: 14px; }
 }
+
+/* ============ the "keep scrolling" pill (continuous scroll across containers)
+   Appears once the grid is pinned at an edge and the wheel keeps going, so a hop
+   to the next folder or zip is never a surprise; the hairline fills as the debt
+   is paid, and a reversal or a pause makes it fade out again. */
+#hop-hint {
+  position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 8px;
+  max-width: min(70vw, 520px);
+  padding: 8px 15px 9px; border-radius: 999px;
+  background: var(--bg2); color: var(--fg);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, .38);
+  font-size: 13px; line-height: 1.2;
+  z-index: 60; pointer-events: none; overflow: hidden;
+  animation: hopin .12s ease-out;
+}
+#hop-hint[hidden] { display: none; }
+#hop-hint .arw { color: var(--accent); font-size: 12px; }
+#hop-hint .txt { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#hop-hint i { position: absolute; left: 0; bottom: 0; height: 2px;
+  width: var(--p, 0%); background: var(--accent); transition: width .08s linear; }
+#hop-hint.end { color: var(--fg2); }
+#hop-hint.end .arw { color: var(--fg2); }
+#hop-hint.end i { width: 0; }
+@keyframes hopin { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; } }
+@media (max-width: 700px) { #hop-hint { bottom: 14px; font-size: 12px; padding: 7px 12px 8px; } }
