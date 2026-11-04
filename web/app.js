@@ -2108,76 +2108,50 @@ function viewerStep(d) {
     showViewerImage(true);           // next picture at the same zoom and position
     return;
   }
-  // Past the last (or before the first) picture: keep walking through the *other
-  // archives in this same folder*, in the order the grid shows them. This never wraps
-  // -- an archive list has ends -- and never leaves the folder.
-  if (state.kind === "zip") viewerCrossZip(d);
+  // Past the last (or before the first) picture: keep walking into the next folder or
+  // zip -- the same depth-first order the grid's scroll-hop walks.
+  viewerCrossContainer(d);
 }
 
-/* ---------- walking from one archive into the next, inside one folder ----------
-   The pictures an archive holds are its own list; the *folder* holds a row of
-   archives. Ending a zip's last picture at nothing makes a folder of zips feel like
-   a pile of dead ends, so the wheel/arrow continues into the neighbour. */
-let viewerHopped = false;          // the open viewer walked into a neighbour archive
+/* ---------- walking from one container into the next (pictures only) ----------
+   This runs the same hopNext/hopPrev the grid's scroll-hop runs, so the viewer and
+   the grid always agree on what "next" means: depth first, and backwards lands at
+   the END of the previous branch (its last picture), never at its first. */
+let viewerHopped = false;          // the open viewer walked into a neighbour container
 let crossing = false;              // one hop at a time: a fast wheel fires many steps
-let zipSibs = { key: "", list: null };
 
-function zipParentRef() {
-  // the folder that holds this zip, straight off the breadcrumb chain (state.parent is
-  // stale when the page was deep-linked straight into #/l…/z123)
-  const i = pathChain.findIndex(s => s.kind === "z" && s.id === state.zipId);
-  const prev = i > 0 ? pathChain[i - 1] : null;
-  return { loc: state.loc, parent: prev && prev.kind === "f" ? prev.id : null };
-}
-
-async function siblingZips() {
-  const { loc, parent } = zipParentRef();
-  const key = `${loc}/${parent}/${state.sort}`;
-  if (zipSibs.key === key && zipSibs.list && zipSibs.list.some(z => z.id === state.zipId)) {
-    return zipSibs.list;
-  }
-  const url = `/api/children?loc=${loc}` + (parent == null ? "" : `&parent=${parent}`) +
-              `&sort=${state.sort}`;
-  const data = await api(url);
-  const list = (data.items || []).filter(x => x.kind === "zip");
-  zipSibs = { key, list };
-  return list;
-}
-
-async function viewerCrossZip(d) {
-  if (crossing || state.kind !== "zip") return false;
+async function viewerCrossContainer(d) {
+  if (crossing) return false;
   crossing = true;
   try {
-    const list = await siblingZips();
-    const at = list.findIndex(z => z.id === state.zipId);
-    if (at < 0) return false;                      // this zip is not in its folder's listing
-    for (let k = at + d; k >= 0 && k < list.length; k += d) {
-      const z = list[k];
-      // look first: hopping onto an archive with no pictures in it would drop the
-      // viewer into an empty grid, so a picture-less zip is stepped over
-      let data;
-      try { data = await api(`/api/zip/${z.id}/entries?sort=${state.sort}`); } catch { continue; }
-      if (!(data.items || []).some(x => x.kind === "image")) continue;
-      hashHold = true;                             // paint the new zip's grid silently...
-      await openZip(z.id, z.name, newNav());
+    for (let k = 0; k < 8; k++) {
+      const t = d > 0 ? await hopNext() : await hopPrev();
+      if (!t) return false;                      // nothing that way: an end of the library
+      hashHold = true;                           // paint the neighbour's grid silently...
+      if (t.kind === "zip") await openZip(t.id, t.name, newNav());
+      else await openFolder(t.id, newNav());
       hashHold = false;
-      if (state.kind !== "zip" || state.zipId !== z.id) return false;   // user clicked away
-      if ($("#viewer").hidden) return false;                            // viewer closed meanwhile
-      // ...then take the picture list off state.items, not off our own fetch: a pinned
-      // folder re-lists in the pinned order, and the viewer must follow the grid
+      const landed = t.kind === "zip" ? (state.kind === "zip" && state.zipId === t.id)
+                                      : (state.kind === "dir" && state.parent === t.id);
+      if (!landed) return false;                 // the user clicked away mid-hop
+      if ($("#viewer").hidden) return false;     // or closed the viewer
+      // the picture list comes off state.items, not off our own fetch: a pinned folder
+      // re-lists in the pinned order, and the viewer must follow the grid
       const imgs = state.items.filter(x => x.kind === "image");
-      if (!imgs.length) return false;
+      if (!imgs.length) continue;                // a branch of videos or folders: step over it
       const it = d > 0 ? imgs[0] : imgs[imgs.length - 1];
       state.navList = imgs;
       state.navIdx = imgs.indexOf(it);
-      showViewerImage();                           // new archive: zoom back to fit
+      showViewerImage();                         // new container: zoom back to fit
+      const g = $("#grid");
+      if (g) g.scrollTop = d > 0 ? 0 : g.scrollHeight;   // the grid lands with the viewer
       // replace, not push: the whole wheel-through stays one history entry, so Esc
-      // closes to this archive's grid instead of stacking a z-old/z-new trail
+      // closes to this container's grid instead of stacking an /i trail
       viewerHopped = true;
       history.replaceState(null, "", buildHash() + "/i" + it.id);
       return true;
     }
-    return false;                                  // no archive that way: stop at the end
+    return false;
   } finally {
     crossing = false;
     hashHold = false;
