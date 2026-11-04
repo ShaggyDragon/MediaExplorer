@@ -2066,8 +2066,13 @@ function zoomClamp() {
   zoom.y = Math.max(-my, Math.min(my, zoom.y));
 }
 function zoomBy(f) {
-  zoom.s = Math.max(1, Math.min(8, zoom.s * f));
-  if (zoom.s <= 1.001) { zoom.s = 1; zoom.x = zoom.y = 0; }
+  // From a 100% view (which can sit below fit) stepping out is allowed to keep shrinking;
+  // starting at fit or above, the step floor stays at fit so '-' cannot walk into a
+  // picture too small to see.
+  const floor = zoom.s < 1 ? 0.05 : 1;
+  zoom.s = Math.max(floor, Math.min(8, zoom.s * f));
+  if (zoom.s > 0.96 && zoom.s < 1.04) zoom.s = 1;   // a step that lands on fit means fit
+  if (zoom.s <= 1.001) { zoom.x = zoom.y = 0; }
   zoomClamp(); zoomApply();
 }
 function zoomReset() { zoom.s = 1; zoom.x = zoom.y = 0; zoomApply(); }
@@ -2082,8 +2087,12 @@ function zoomActual() {
   const bw = i.clientWidth || 1, bh = i.clientHeight || 1;
   const k = Math.min(bw / i.naturalWidth, bh / i.naturalHeight);
   if (!(k > 0)) return;
-  zoom.s = Math.min(40, 1 / k);
-  if (zoom.s <= 1.001) { zoom.s = 1; zoom.x = zoom.y = 0; }   // already 1:1 or smaller
+  // Below 1 is the point, not an accident: a 500x500 file in a 1400px window is enlarged
+  // to fit, so 100% has to make it SMALLER -- the picture sits at its true size in the
+  // middle, which is what the owner asked for and what "fit" can never show.
+  zoom.s = Math.max(0.05, Math.min(40, 1 / k));
+  if (Math.abs(zoom.s - 1) < 0.01) zoom.s = 1;      // the box happens to be 1:1 already
+  if (zoom.s <= 1.001) zoom.x = zoom.y = 0;
   zoomClamp(); zoomApply();
 }
 function panBy(dx, dy) { zoom.x += dx; zoom.y += dy; zoomClamp(); zoomApply(); }
