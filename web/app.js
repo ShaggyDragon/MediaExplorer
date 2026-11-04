@@ -2,6 +2,9 @@
 // MediaExplorer frontend — v{{VERSION}}
 
 const $ = s => document.querySelector(s);
+/* Which folder row was clicked last, so a row folds only on a repeat click -- see
+   renderTreeNode. Anything selected outside the tree forgets it (v1.1.1). */
+let lastTreeKey = null;
 
 /* ---------- icons (v0.1.244) ----------
    Inline SVG in place of emoji: emoji are drawn by the OS font, so the same glyph
@@ -335,13 +338,22 @@ function renderTreeNode(parent, r) {
   n.onclick = async e => {
     e.stopPropagation();
     selectTreeNode(n);
-    if (isZip) { openZip(r.id, r.name); return; }
-    // Clicking the open folder again closes it: the row is the toggle, not just an
-    // opener. Closing happens *after* openFolder so the reveal walk (which expands
-    // ancestors) cannot re-open the folder the user just closed.
-    const wasOpen = n._kids && !n._kids.hidden;
+    if (isZip) { lastTreeKey = "n" + r.id; openZip(r.id, r.name); return; }
+    // The row is a toggle only on a repeat click: "open, look at a picture inside it,
+    // come back to the folder" must not fold the subfolders away (owner, v1.1.1). So the
+    // fold needs the SAME row clicked twice with nothing else selected in between --
+    // anything picked in the grid, in the crumbs, or another row clears the memory.
+    const key = "n" + r.id, wasOpen = n._kids && !n._kids.hidden;
+    const again = lastTreeKey === key;
+    lastTreeKey = key;
     await openFolder(r.id);
-    if (wasOpen) { n._kids.hidden = true; n.classList.remove("open"); return; }
+    // Closing happens *after* openFolder so the reveal walk (which expands ancestors)
+    // cannot re-open the folder the user just closed.
+    if (again && wasOpen) {
+      n._kids.hidden = true; n.classList.remove("open");
+      lastTreeKey = null;                       // a third click opens it again
+      return;
+    }
     // One level, not the subtree: walking down a list of folders is the point, and
     // the caret (▸) still closes what this opened.
     if (n._kids && n._kids.hidden) await ensureNodeOpen(n, r.id);
@@ -1046,6 +1058,12 @@ function goUp() {
   else if (t.id) openFolder(t.id);
 }
 $("#btn-up").onclick = goUp;
+/* Picking a picture, a folder tile, a zip, a crumb or Up means "I am doing something
+   else now": the next click on a folder row opens it instead of folding it. */
+for (const sel of ["#grid", "#crumbs", "#btn-up"]) {
+  const el = $(sel);
+  if (el) el.addEventListener("click", () => { lastTreeKey = null; }, true);
+}
 
 /* ---------- favourites menu (v0.1.244) ----------
    The star in the top bar opens a short list of saved folders. The first line adds
