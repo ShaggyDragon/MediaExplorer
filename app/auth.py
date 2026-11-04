@@ -34,7 +34,11 @@ import time
 from .db import meta_get, meta_set
 
 COOKIE = "mx_auth"
-MAX_AGE = 30 * 24 * 3600          # a month: this is a household lock, not a bank
+# No lifetime on the cookie on purpose (owner, 2026-11): a *session* cookie, so it dies
+# with the browser instead of sitting valid for a month. Closing a tab cannot end it --
+# the server never sees that -- and the browser can restore session cookies on restart,
+# which is why the password remains the thing that really ends a session (changing it
+# invalidates every outstanding cookie at once).
 
 
 class FixedByEnvironment(Exception):

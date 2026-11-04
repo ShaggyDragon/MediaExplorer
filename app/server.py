@@ -248,7 +248,10 @@ async def login_submit(request: Request):
         log.warning("auth: failed password from %s", request.client.host if request.client else "?")
         return _login_page(request, nxt, "Incorrect password")
     resp = RedirectResponse(nxt, status_code=303)
-    resp.set_cookie(auth.COOKIE, auth.token(), max_age=auth.MAX_AGE, path="/",
+    # no max_age/expires: a session cookie, kept in browser memory and dropped when the
+    # browser closes (see the note in auth.py). Browsing never extends it because this is
+    # the only place the cookie is ever set.
+    resp.set_cookie(auth.COOKIE, auth.token(), path="/",
                     httponly=True, samesite="lax", secure=auth.secure_for(request))
     log.info("auth: unlocked (%s)", request.client.host if request.client else "?")
     return resp
