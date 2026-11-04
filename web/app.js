@@ -2041,8 +2041,9 @@ window.addEventListener("error", ev => {
 }, true);
 
 /* ---------- zoom + pan (no build step: the viewer already streams the original) ----
-   + / -  zoom 1.3x per press, 0 resets, arrows and drag pan while zoomed, wheel
-   steps to the next picture at 1x and zooms once you are in. */
+   + / -  zoom 1.3x per press, 0 or * fits the whole picture, / snaps to 100% (one
+   picture pixel per screen pixel), arrows and drag pan while zoomed, wheel steps to the
+   next picture at fit and zooms once you are in. */
 const zoom = { s: 1, x: 0, y: 0 };
 function zoomApply() {
   const i = $("#viewer-img");
@@ -2070,6 +2071,21 @@ function zoomBy(f) {
   zoomClamp(); zoomApply();
 }
 function zoomReset() { zoom.s = 1; zoom.x = zoom.y = 0; zoomApply(); }
+/* 100% = one picture pixel per screen pixel (owner, v1.1.2). The viewer letterboxes the
+   file into its box, so scale 1 is "fit", not "actual": the factor is how much smaller
+   the fitted content is than the file itself, and 1/k snaps it to 1:1. Deliberately not
+   capped at the 8x the stepping keys use -- a 24MP photo in a 1000px box needs ~5x, a
+   6000px scan needs more, and 100% is a promise about pixels, not a zoom step. */
+function zoomActual() {
+  const i = $("#viewer-img");
+  if (!i || !i.naturalWidth) return;
+  const bw = i.clientWidth || 1, bh = i.clientHeight || 1;
+  const k = Math.min(bw / i.naturalWidth, bh / i.naturalHeight);
+  if (!(k > 0)) return;
+  zoom.s = Math.min(40, 1 / k);
+  if (zoom.s <= 1.001) { zoom.s = 1; zoom.x = zoom.y = 0; }   // already 1:1 or smaller
+  zoomClamp(); zoomApply();
+}
 function panBy(dx, dy) { zoom.x += dx; zoom.y += dy; zoomClamp(); zoomApply(); }
 
 function viewerStep(d) {
@@ -3172,6 +3188,8 @@ document.addEventListener("keydown", e => {
     else if (e.key === "+" || e.key === "=") { e.preventDefault(); zoomBy(1.3); }
     else if (e.key === "-" || e.key === "_") { e.preventDefault(); zoomBy(1 / 1.3); }
     else if (e.key === "0") { e.preventDefault(); zoomReset(); }
+    else if (e.key === "/") { e.preventDefault(); zoomActual(); }   // 100%: 1 picture px = 1 screen px
+    else if (e.key === "*") { e.preventDefault(); zoomReset(); }    // fit the window, both axes
     else if (zoom.s > 1.001 && (e.key === "ArrowRight" || e.key === "ArrowLeft" ||
                                 e.key === "ArrowUp" || e.key === "ArrowDown")) {
       e.preventDefault();                          // zoomed: the arrows pan, not page
