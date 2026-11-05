@@ -1,5 +1,14 @@
 name: container
 
+# Publishes the image to GHCR so Unraid has a registry identity to compare against:
+# the Docker tab can then show "up-to-date" instead of the orange "not available",
+# which is what it says for an image with no RepoDigests (a local `docker build`).
+#
+# Tags: ghcr.io/shaggydragon/mediaexplorer:latest and :<VERSION file>, amd64 only
+# (the app is pure Python + ffmpeg; no arm build is needed for the two Unraid boxes).
+#
+# Actions are pinned by commit SHA so a moved tag cannot change what runs here.
+
 on:
   push:
     branches: [main]
@@ -8,7 +17,7 @@ on:
 
 permissions:
   contents: read
-  packages: write
+  packages: write          # GITHUB_TOKEN can publish to this repo's packages
 
 jobs:
   build:
@@ -39,5 +48,6 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/ShaggyDragon/MediaExplorer
             org.opencontainers.image.version=${{ steps.v.outputs.version }}
+            org.opencontainers.image.title=MediaExplorer
           cache-from: type=gha
           cache-to: type=gha,mode=max

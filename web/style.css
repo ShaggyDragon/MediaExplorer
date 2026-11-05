@@ -213,6 +213,22 @@ body {
   border: 4px dashed var(--border); border-radius: 4px; font-size: 13px; }
 .zipwarn { position: absolute; top: 6px; right: 8px; color: var(--warn); font-weight: 700; }
 
+/* An archive with images that cannot be decoded (zip_defect). Top-LEFT: the other three
+   corners of a zip tile are already spoken for (amber "contains video" top-right, the
+   ZIP tag bottom-left, the item count bottom-right), and this must not sit on any of
+   them. Red because it is the only tile marker that means "broken", not "notable". */
+.zipbad {
+  position: absolute; left: 8px; top: 6px; z-index: 3;
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 1px 6px 2px; border-radius: 999px;
+  background: rgba(10, 10, 12, .74); color: #ff6b66; font-weight: 700;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .45); }
+.zipbad svg.ic { width: 14px; height: 14px; color: #ff6b66; }
+.zipbad b { font-size: 12px; line-height: 1; }
+.ph.bad { color: var(--warn); position: absolute; inset: 15%;
+  display: flex; align-items: center; justify-content: center; }
+.ph.bad svg.ic { width: 30px; height: 30px; }
+
 /* hover flipbook: filmstrip for this video is being generated */
 .cell.extracting img.full { filter: brightness(0.72); }
 .cell.extracting .vidbadge { animation: mxpulse 0.8s ease-in-out infinite alternate; }

@@ -1,3 +1,5 @@
+import io
+import csv
 import json
 import logging
 import traceback
@@ -15,7 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.exception_handlers import http_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, Response,
-                               StreamingResponse, RedirectResponse)
+                               StreamingResponse, RedirectResponse, PlainTextResponse)
 from natsort import natsorted
 
 from .config import (APP_NAME, VERSION, PORT, DATA_PATH, media_locations, IMAGE_EXTS, EAGER_BACKLOG,
@@ -528,6 +530,12 @@ def item_payload(row):
          "thumb": (f"/api/thumb/node/{row['id']}?v={thumb_vstamp(row)}"
                    if row["thumb_state"] == "ready" else None),
          "pending": row["thumb_state"] == "pending"}
+    if row["kind"] == "zip":
+        # entries inside this archive that could not be decoded (see zip_defect): the
+        # tile paints a badge from this, the repair list is /api/defects
+        bad = _row_val(row, "bad_count", 0) or 0
+        if bad:
+            d["bad"] = bad
     if row["kind"] == "video":
         # running time for the tile label; absent until measured (-1 = unreadable)
         dur = _row_val(row, "dur", 0)
@@ -1023,6 +1031,48 @@ def api_favs_del(fav_id: int):
     return api_favs()
 
 
+@app.get("/api/zip/{zip_id}/defects")
+def api_zip_defects(zip_id: int):
+    """Entries inside one archive that could not be decoded, with the reason."""
+    row = node_or_404(zip_id)
+    rows = q("SELECT * FROM zip_defect WHERE zip_id=? ORDER BY entry", (zip_id,))
+    return {"zip_id": zip_id, "name": row["name"], "rel": row["rel"],
+            "count": len(rows),
+            "items": [{"entry": r["entry"] or row["name"],
+                       "scope": r["scope"], "reason": r["reason"],
+                       "size": r["size"], "detected_at": r["detected_at"]} for r in rows]}
+
+
+@app.get("/api/defects")
+def api_defects(format: str = "json"):
+    """Every flagged zip in the library: the list to hold against a backup copy.
+
+    One row per zip with its path from the location root, so the same file can be
+    found on another NAS by name; ?format=csv gives the sheet to work from.
+    """
+    rows = q("""SELECT n.id, n.name, n.rel, COALESCE(n.bad_count, 0) AS bad,
+                       n.size, n.mtime, l.name AS loc_name, l.root AS loc_root
+                FROM nodes n JOIN locations l ON l.id = n.loc_id
+                WHERE n.kind='zip' AND COALESCE(n.bad_count, 0) > 0
+                ORDER BY l.name, n.rel""")
+    if format == "csv":
+        out = io.StringIO()
+        w = csv.writer(out)
+        w.writerow(["location", "folder", "zip_file", "bad_entries", "size", "modified"])
+        for r in rows:
+            rel = r["rel"] or r["name"] or ""
+            folder = rel.rsplit("/", 1)[0] if "/" in rel else ""
+            w.writerow([r["loc_name"], folder, r["name"], r["bad"], r["size"] or 0,
+                        time.strftime("%Y-%m-%d %H:%M", time.localtime(r["mtime"] or 0))])
+        return PlainTextResponse(out.getvalue(), media_type="text/csv",
+                                 headers={"content-disposition":
+                                          'attachment; filename="mediaexplorer-defects.csv"'})
+    return {"count": len(rows),
+            "items": [{"id": r["id"], "location": r["loc_name"], "root": r["loc_root"],
+                       "rel": r["rel"], "name": r["name"], "bad": r["bad"],
+                       "size": r["size"], "mtime": r["mtime"]} for r in rows]}
+
+
 @app.get("/api/zip/{zip_id}/entries")
 def api_zip_entries(zip_id: int, sort: str = "name", nav: int = 0):
     row = node_or_404(zip_id)
@@ -1047,6 +1097,8 @@ def api_zip_entries(zip_id: int, sort: str = "name", nav: int = 0):
         ordered = sorted(ordered, key=lambda r: -r["size"])  # entries keep zip time
     zv = vstamp(row)                     # id reuse after a rebuild: bust the cache
     out = []
+    defects = {d["entry"]: d["reason"] for d in
+               q("SELECT entry, reason FROM zip_defect WHERE zip_id=?", (zip_id,))}
     for r in ordered:
         # zip_entry rides on every entry from the server. The page used to stamp it on
         # only when it first painted a zip; a re-list while thumbnails were building
@@ -1058,7 +1110,11 @@ def api_zip_entries(zip_id: int, sort: str = "name", nav: int = 0):
                     "mtime": zv,          # the zip's stamp: used to version the file URL
                     "thumb": (f"/api/thumb/entry/{r['id']}?v={thumb_vstamp(r)}"
                               if r["thumb_state"] == "ready" else None),
-                    "pending": r["thumb_state"] == "pending"})
+                    "pending": r["thumb_state"] == "pending",
+                    # unreadable bytes: the tile marks it so a hole in the grid is
+                    # explained rather than looking like a thumbnail that never came
+                    "bad": r["name"] in defects,
+                    "why": defects.get(r["name"])})
     return {"path": breadcrumb(one("SELECT * FROM locations WHERE id=?", (row["loc_id"],)),
                                row["parent_id"]) + [{"id": zip_id, "name": row["name"], "kind": "z"}],
             "rel": row["rel"],

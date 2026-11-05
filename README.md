@@ -56,6 +56,9 @@ video, spread over nested folders nobody wants to tidy. The requirements that sh
 - Entries are thumbnailed and viewed by byte range (fast path for stored/no-compression
   archives; deflate works too, just slower)
 - Videos stuck inside a zip are flagged for extraction instead of silently breaking
+- Images inside a zip that cannot be decoded are counted on the tile (red ⚠ badge) and
+  listed per archive — `/api/defects?format=csv` is the sheet to hold against a backup copy
+  ([details](docs/corrupt-zips.md))
 
 **Videos**
 - Poster plus a second still (3% and 6% into the clip), built in one ffmpeg call

@@ -163,6 +163,20 @@ def _init():
         csize INTEGER DEFAULT 0,
         UNIQUE(zip_id, name)
     );
+    -- What could not be read INSIDE an archive. Stored per entry, not just as a count
+    -- on the zip, because the point of the flag is to compare this library against a
+    -- backup copy of the same zips and repair the damaged ones: an entry name is the
+    -- only thing that survives between the two libraries.
+    CREATE TABLE IF NOT EXISTS zip_defect(
+        zip_id INTEGER NOT NULL,
+        entry TEXT NOT NULL,                    -- name in the archive; '' = the archive itself
+        scope TEXT NOT NULL DEFAULT 'image',    -- 'image' (bytes inside) | 'archive' (unopenable zip)
+        reason TEXT,
+        size INTEGER DEFAULT 0,
+        detected_at REAL DEFAULT 0,
+        PRIMARY KEY(zip_id, entry)
+    );
+    CREATE INDEX IF NOT EXISTS idx_zipdefect_zip ON zip_defect(zip_id);
     """)
     for col, typ in (("zoffset", "INTEGER DEFAULT -1"),
                      ("method", "INTEGER DEFAULT 0"),
@@ -223,6 +237,25 @@ def _init():
         _conn.execute("ALTER TABLE nodes ADD COLUMN dur REAL")  # type: ignore[union-attr]
     except sqlite3.OperationalError:
         pass  # column already present
+    # How many entries in this zip are known to be unreadable. Denormalised because the
+    # folder listing paints one badge per zip tile and must not run a GROUP BY per row.
+    try:
+        _conn.execute("ALTER TABLE nodes ADD COLUMN bad_count INTEGER DEFAULT 0")  # type: ignore[union-attr]
+    except sqlite3.OperationalError:
+        pass  # column already present
+    # Entries the old code marked 'error' were found by exactly the decode attempt this
+    # table now records in detail, so adopt them once: a library scanned before this
+    # existed shows its flagged zips without a rescan. They carry no reason -- say so.
+    if not _conn.execute("SELECT 1 FROM app_meta WHERE key='zip_defects_seeded'").fetchone():  # type: ignore[union-attr]
+        _conn.execute(  # type: ignore[union-attr]
+            "INSERT OR IGNORE INTO zip_defect(zip_id, entry, scope, reason, size, detected_at)"
+            " SELECT zip_id, name, 'image', 'unclassified (indexed before v1.4.0)', size, 0"
+            " FROM zip_entries WHERE thumb_state='error'")
+        _conn.execute(  # type: ignore[union-attr]
+            "UPDATE nodes SET bad_count=(SELECT COUNT(*) FROM zip_defect d WHERE d.zip_id=nodes.id)"
+            " WHERE id IN (SELECT DISTINCT zip_id FROM zip_defect)")
+        _conn.execute("INSERT OR REPLACE INTO app_meta(key,val) VALUES('zip_defects_seeded',?)",  # type: ignore[union-attr]
+                      (str(int(time.time())),))
     # v2 thumbnail format = exact 300x225 center-cropped masters.
     # Bump user_version and invalidate old aspect-preserving thumbs once.
     ver = _conn.execute("PRAGMA user_version").fetchone()[0]

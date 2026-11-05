@@ -3,6 +3,7 @@ import hashlib
 import io
 import logging
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -614,11 +615,26 @@ def gen_zip_tile(zip_id, force=False):
     if not ents:
         return 0
     cells = []
+    touched = []
     for er in ents:
+        # The tile is built from the first four images without a full scan, so this is
+        # often the first time an archive is looked into at all: record what it finds.
         try:
-            cells.append(Image.open(io.BytesIO(zip_entry_bytes(zrow, er))).convert("RGB"))
-        except Exception:
+            raw = zip_entry_bytes(zrow, er)
+        except Exception as e:
+            _defect_note(zip_id, er["name"], "archive", _why(e), er["size"] or 0)
+            touched.append(er["name"])
             continue
+        try:
+            cells.append(Image.open(io.BytesIO(raw)).convert("RGB"))
+            if _defect_clear_if_any(zip_id, er["name"]):
+                touched.append(er["name"])
+        except Exception as e:
+            _defect_note(zip_id, er["name"], "image", _why(e), er["size"] or 0)
+            touched.append(er["name"])
+            continue
+    if touched:
+        _defect_count(zip_id)
     if not cells:
         return 0
     blob = _jpeg_bytes(_quad(cells))
@@ -1128,13 +1144,28 @@ def gen_zip_pack(zip_id, ids=None, force=False, front=False):
         if not rows:
             return 0
     members, targets, meta = {}, {}, {}
+    touched = []            # entries whose defect flag changed (thread-safe append)
 
     def one_entry(er):
+        # Two phases on purpose: reading the bytes and decoding them fail for different
+        # reasons, and the owner's repair list needs to tell "the archive is damaged"
+        # apart from "this picture inside it is damaged".
         try:
-            blob = encode_thumb(zip_entry_bytes(zrow, er))
-        except Exception:
+            raw = zip_entry_bytes(zrow, er)
+        except Exception as e:
+            _defect_note(zip_id, er["name"], "archive", _why(e), er["size"] or 0)
+            touched.append(er["name"])
             exec_many("UPDATE zip_entries SET thumb_state='error' WHERE id=?", (er["id"],))
             return er, None
+        try:
+            blob = encode_thumb(raw)
+        except Exception as e:
+            _defect_note(zip_id, er["name"], "image", _why(e), er["size"] or 0)
+            touched.append(er["name"])
+            exec_many("UPDATE zip_entries SET thumb_state='error' WHERE id=?", (er["id"],))
+            return er, None
+        if _defect_clear_if_any(zip_id, er["name"]):
+            touched.append(er["name"])          # it decodes now: a stale flag was dropped
         events.publish_thumb(er["id"], blob, int(float(zrow["mtime"] or 0) * 1000),
                              kind="entry", parent=zrow["parent_id"], zip_id=zrow["id"])
         return er, blob
@@ -1145,6 +1176,8 @@ def gen_zip_pack(zip_id, ids=None, force=False, front=False):
         members[er["name"]] = blob
         targets[er["name"]] = ("zip_entries", er["id"])
         meta[er["name"]] = (er["size"], zrow["mtime"])
+    if touched:
+        _defect_count(zip_id)        # a zip whose every entry failed still gets its badge
     if not members:
         return 0
     try:
@@ -1422,6 +1455,8 @@ def queue_pending_for_subtree(loc_id, parent_id):
 
 def index_zip(zip_id):
     row = node_by_id(zip_id)
+    if row is None:
+        return None
     # unchanged since last index -> skip (110k-zip libraries must not re-read
     # every central directory on every scan)
     if row["zindexed"] == row["mtime"] and \
@@ -1430,10 +1465,22 @@ def index_zip(zip_id):
     try:
         with zipfile.ZipFile(node_abspath(row)) as zf:
             infos = zf.infolist()
-    except (OSError, zipfile.BadZipFile):
+    except (OSError, zipfile.BadZipFile) as e:
+        # The archive itself will not open. That is a repair candidate in its own right
+        # (and the most likely one to be missing from a restore), so record it rather
+        # than letting the zip sit there looking like an empty one.
+        _defect_note(zip_id, "", "archive", _why(e), row["size"] or 0)
+        _defect_count(zip_id)
         return None
+    if _defect_clear_if_any(zip_id, ""):        # it opens now: drop a stale archive flag
+        _defect_count(zip_id)
     # contents changed: drop stale rows, re-insert fresh
     exec_many("DELETE FROM zip_entries WHERE zip_id=?", (zip_id,))
+    # ...and its per-entry defect flags with them: an entry that is not in the archive
+    # any more cannot be "unreadable", and the next decode re-detects what is left.
+    if one("SELECT 1 FROM zip_defect WHERE zip_id=? AND entry<>'' LIMIT 1", (zip_id,)):
+        exec_many("DELETE FROM zip_defect WHERE zip_id=? AND entry<>''", (zip_id,))
+        _defect_count(zip_id)
     for info in infos:
         if info.is_dir():
             continue
@@ -1482,6 +1529,65 @@ def zip_entry_bytes(zrow, erow):
             return raw
         import zlib
         return zlib.decompressobj(-zlib.MAX_WBITS).decompress(raw)
+
+
+# ---- zip defects ---------------------------------------------------------
+# A zip with images that cannot be decoded is a repair candidate, not merely a missing
+# thumbnail: the owner keeps a backup of the same archives on another NAS and wants to
+# compare the two. Record WHAT failed and WHY, per entry, and keep the count on the zip
+# row so the tile badge costs one column read instead of a GROUP BY per tile.
+
+_PLAIN_WHY = (
+    ("Truncated File Read", "image is truncated - the file is incomplete"),
+    ("cannot identify image file", "not a readable image (wrong format, or empty)"),
+    ("File is not a zip file", "archive is not a valid zip"),
+    ("Bad magic number for file header", "archive data is damaged"),
+)
+
+
+def _why(exc):
+    """One line naming what went wrong, in words a person can act on.
+
+    Exceptions from Pillow carry object reprs (`<_io.BytesIO object at 0x7f…>`) and the
+    repair list is read by a person, so strip that noise; a known failure gets a plain
+    phrase with the exception name kept in brackets for diagnosis."""
+    msg = str(exc).strip().replace("\n", " ")
+    msg = re.sub(r"\s*<[^<>]*>", "", msg)
+    msg = re.sub(r"\s+at 0x[0-9a-fA-F]+", "", msg)
+    for needle, plain in _PLAIN_WHY:
+        if needle in msg:
+            return plain + " [" + type(exc).__name__ + "]"
+    return (type(exc).__name__ + (": " + msg[:120] if msg else ""))
+
+
+def _defect_note(zip_id, entry, scope, reason, size=0):
+    exec_many(
+        "INSERT INTO zip_defect(zip_id, entry, scope, reason, size, detected_at)"
+        " VALUES(?,?,?,?,?,?) ON CONFLICT(zip_id, entry) DO UPDATE SET"
+        " scope=excluded.scope, reason=excluded.reason, size=excluded.size,"
+        " detected_at=excluded.detected_at",
+        (zip_id, entry, scope, (reason or "")[:200], int(size or 0), time.time()))
+
+
+def _defect_clear(zip_id, entry):
+    exec_many("DELETE FROM zip_defect WHERE zip_id=? AND entry=?", (zip_id, entry))
+
+
+def _defect_clear_if_any(zip_id, entry):
+    """Drop a now-stale flag. Reads first: a successful decode is the common case and
+    must not cost a committed write per entry on a 200-entry archive."""
+    if one("SELECT 1 FROM zip_defect WHERE zip_id=? AND entry=?", (zip_id, entry)) is None:
+        return False
+    _defect_clear(zip_id, entry)
+    return True
+
+
+def _defect_count(zip_id):
+    """Refresh nodes.bad_count after defects were added or cleared for this zip."""
+    row = one("SELECT COUNT(*) c FROM zip_defect WHERE zip_id=?", (zip_id,))
+    n = row["c"] if row is not None else 0
+    exec_many("UPDATE nodes SET bad_count=? WHERE id=?", (n, zip_id))
+    return n
 
 
 def zip_has_video(zip_id):

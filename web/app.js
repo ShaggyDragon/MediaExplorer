@@ -1628,7 +1628,9 @@ function tile(it) {
 
   if (it.kind === "image") {
     if (it.thumb) box.appendChild(thumbRetry(img(it.thumb, it.name), it));
+    else if (it.bad) box.appendChild(div("ph bad", ICON.warn));      // bytes are damaged
     else box.appendChild(div("ph pending", it.pending ? "…" : "?"));
+    if (it.bad) cell.title = it.name + " — " + (it.why || "cannot be read");
     cell.onclick = () => { if (performance.now() < closeGuardUntil) return; openViewer(it); };
     cell.oncontextmenu = e => showCtx(e, { loc: state.loc, kind: "image", name: it.name, item: it,
                                            nodeId: it.zip_entry || state.kind === "zip" ? null : it.id });
@@ -1670,6 +1672,13 @@ function tile(it) {
   } else if (it.kind === "zip") {
     box.appendChild(mosaicTile(it));
     if (it.has_video) box.appendChild(span("zipwarn", ICON.warn, "contains video"));
+    if (it.bad) {
+      // Images inside that cannot be decoded. The count matters: one bad entry in a
+      // 200-image archive is a different repair job from an archive that is all damage.
+      box.appendChild(span("zipbad", ICON.warn + "<b>" + it.bad + "</b>",
+        it.bad === 1 ? "1 image inside this zip can't be read - a candidate to compare with the backup"
+                     : it.bad + " images inside this zip can't be read - a candidate to compare with the backup"));
+    }
     cell.onclick = () => openZip(it.id, it.name);
     // kind "zip", not "dir": a zip browses like a folder but the menu must not offer to
     // scan subfolders or build filmstrips in it -- zips have none (owner, v1.0.1)
