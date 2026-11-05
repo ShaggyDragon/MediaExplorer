@@ -1598,8 +1598,10 @@ def _run_scan(scans, include_zips=False, why="button"):
     except Exception:
         pass
     jobs = []          # (loc_id, parent_id) folder packs to build
-    vids = []
+    job_work = []      # thumbnails each folder pack will encode
+    vids = []          # (video_id, 1 if it needs a poster, else 0)
     zip_ids = []       # zips found while walking, when the walk includes them
+    zip_work = []      # entries + its own 4-up, per zip
     tiles_all = []     # (kind, id) mosaics to recompose
     grand_total = 0    # work found so far across the whole walk (monotone)
     scans = [(s[0], s[1], s[2] if len(s) > 2 else False) for s in scans]
@@ -1641,17 +1643,23 @@ def _run_scan(scans, include_zips=False, why="button"):
                     # twice and counted it twice, so a folder of 4 zips read "x/9"
                     if len(zip_ids) < DEEP_SCAN_MAX:
                         zip_ids.append(r["id"])
+                        # the zip counted as ONE item here is exactly the miscount the
+                        # progress bar showed: a 300-entry zip read "1 thumbnail". Ask
+                        # the database what the refresh will actually encode, the same
+                        # predicate _refresh_zip_entries uses, plus 1 for its own 4-up.
+                        zip_work.append(1 + _zip_pending_entries(r["id"]))
                 elif not include_zips:
                     tiles.append(("zip", r["id"]))
             elif k == "image" and r["thumb_state"] == "pending":
                 pend_img += 1        # 'error' rows are not work this scan can finish
             elif k == "video":
-                vids.append(r["id"])
                 # only a poster that is missing or from an older encode produces work;
                 # a current one is adopted and publishes nothing, so counting it would
                 # leave the Scan badge stuck above zero for the whole job
-                if (r["thumb_state"] == "pending"
-                        or (r["thumb_state"] == "ready" and (r["thumb_gen"] or 0) < THUMB_GEN)):
+                needs = (r["thumb_state"] == "pending"
+                         or (r["thumb_state"] == "ready" and (r["thumb_gen"] or 0) < THUMB_GEN))
+                vids.append((r["id"], 1 if needs else 0))
+                if needs:
                     vid_todo += 1
             elif k == "dir":
                 tiles.append(("dir", r["id"]))
@@ -1669,6 +1677,7 @@ def _run_scan(scans, include_zips=False, why="button"):
                               work_total=grand_total)
         if pend_img:
             jobs.append((lrow["id"], parent))   # one pack write for the folder
+            job_work.append(pend_img)           # ...holding this many thumbnails
         if not quiet or new_media or pend_img or len(vids) > vids_before:
             _scan_event(
                 f"Scanning completed: {label} in {time.time() - t0:.1f}s -- "
@@ -1688,33 +1697,44 @@ def _run_scan(scans, include_zips=False, why="button"):
                     scans.append((lrow, r["id"], True))
             with _scan_lock:
                 scan_state["folders"] = len(scans)
+    # The progress bar counts thumbnails, not tasks: a folder pack stands for every
+    # image it will encode, a zip for every entry it will rebuild (plus its own 4-up).
+    # Counting futures made "3 folders + 9 zips" read as "12 thumbnails" -- the
+    # number tracked how many archives were opened, not how much work was left.
+    total_thumbs = (sum(job_work) + sum(w for _, w in vids)
+                    + len(tiles_all) + sum(zip_work))
     with _scan_lock:
         scan_state.update(phase="thumbs", folders=len(scans),
-                          thumb_total=len(jobs) + len(vids) + len(tiles_all) + len(zip_ids),
-                          work_total=max(grand_total, scan_state.get("work_total") or 0))
+                          thumb_total=total_thumbs,
+                          work_total=max(grand_total + sum(zip_work),
+                                         scan_state.get("work_total") or 0))
     from .media import _executor, _safe_folder_pack, ensure_video_poster
-    futs = [_executor.submit(_safe_folder_pack, loc_id, pid) for loc_id, pid in jobs]
+    futs = [(_executor.submit(_safe_folder_pack, loc_id, pid), w)
+            for (loc_id, pid), w in zip(jobs, job_work)]
     # posters, not filmstrips: one frame per video is the default tile state, and a
     # filmstrip is 9x the decode work for a tile nobody has hovered yet. Hover and
     # right-click "Build filmstrips" make the strips on demand.
-    futs += [_executor.submit(ensure_video_poster, vid) for vid in vids]
-    futs += [_executor.submit(_safe_tile, kind, tid) for kind, tid in tiles_all]
+    futs += [(_executor.submit(ensure_video_poster, vid), w) for vid, w in vids]
+    futs += [(_executor.submit(_safe_tile, kind, tid), 1) for kind, tid in tiles_all]
     if zip_ids:
         # "Scan all subfolders" stopped at folders, so a zip's own entries were never
-        # refreshed by a subtree walk; this is the version that goes into them too
-        futs += [_executor.submit(_refresh_zip_entries, zid, True) for zid in zip_ids]
+        # refreshed by a subtree walk; this is the version that goes into them too.
+        # add_to_scan=False: those entries are already in the total above, so letting
+        # the zip add them again would double the countdown.
+        futs += [(_executor.submit(_refresh_zip_entries, zid, False), w)
+                 for zid, w in zip(zip_ids, zip_work)]
         _scan_event(f"Scanning {len(zip_ids)} zip archive"
                     f"{'' if len(zip_ids) == 1 else 's'} inside the subtree",
                     zips=len(zip_ids))
     _scan_event(f"Scanning finished: {len(scans)} folder"
-                f"{'' if len(scans) == 1 else 's'}, {len(futs)} thumbnail"
-                f"{'' if len(futs) == 1 else 's'} queued{_why_tag(why)}",
-                folders=len(scans), thumbs=len(futs), why=why)
+                f"{'' if len(scans) == 1 else 's'}, {total_thumbs} thumbnail"
+                f"{'' if total_thumbs == 1 else 's'} queued{_why_tag(why)}",
+                folders=len(scans), thumbs=total_thumbs, why=why)
     while futs:
-        done_now = [f for f in futs if f.done()]
-        futs = [f for f in futs if not f.done()]
+        done_now = [f for f in futs if f[0].done()]
+        futs = [f for f in futs if not f[0].done()]
         with _scan_lock:
-            scan_state["thumb_done"] += len(done_now)
+            scan_state["thumb_done"] += sum(w for _, w in done_now)
         if futs:
             time.sleep(0.4)
     # No filmstrip pre-build here: posters are made by the thumbs phase above, and a
@@ -1723,6 +1743,24 @@ def _run_scan(scans, include_zips=False, why="button"):
     with _scan_lock:
         scan_state.update(phase="idle", running=False)
     _scan_thread = None
+
+
+def _zip_pending_entries(zip_id):
+    """How many thumbnails a zip refresh will encode, asked *before* it runs.
+
+    _refresh_zip_entries can only say this after it has re-pended the stale rows, which
+    is too late for a walk that has to publish a total up front. The predicate is the
+    same one it uses -- work outstanding, or an encode from an older geometry -- so the
+    walk counts a 300-entry archive as 300 thumbnails, not as one archive."""
+    try:
+        r = one(f"SELECT COUNT(*) c FROM zip_entries WHERE zip_id=? AND kind='image'"
+                f" AND ({THUMB_WORK} OR (thumb_state='ready'"
+                f" AND COALESCE(thumb_gen, 0) < ?))", (zip_id, THUMB_GEN))
+        return r["c"] if r else 0
+    except Exception as e:
+        log.warning("zip %s pending count failed: %s", zip_id, e)
+        return 0
+
 
 def _refresh_zip_entries(zip_id, add_to_scan=False, report=None):
     """Re-read one zip and rebuild whatever it is missing or encoded by an older
