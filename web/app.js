@@ -1390,7 +1390,7 @@ function armVideoHover(nodeId, imgEl, poster, cell) {
    `vframes` and shared with the hover path. */
 const AUTO_BEAT = 3000;      // ms per image: a slow, ambient flip (Andy, Nov 2026: 1.4s felt rushed)
 const AUTO_STRIP = 900;      // a full filmstrip is a motion preview: 8 frames x 3s = 24s a loop
-const AUTO_MAX = 48;         // tiles animating at once
+const AUTO_MAX = 48;        // tiles animating at once, nearest the viewport first
 const autoPreviews = new Map();     // nodeId -> {urls, i, timer, poster}
 let autoObserver = null;
 
@@ -1462,10 +1462,65 @@ function clearFade(im) {
   if (top) { top._gen = (top._gen || 0) + 1; top.remove(); }
 }
 
+function autoCell(id) { return document.querySelector(`#grid .cell[data-id="${id}"]`); }
+/* How far a tile sits from the middle of the screen. The ambient preview spends its
+   budget on what you are looking at, not on whatever came first in the listing. */
+function autoRank(el) {
+  if (!el || !el.isConnected) return Infinity;
+  const r = el.getBoundingClientRect();
+  return Math.hypot((r.left + r.right) / 2 - window.innerWidth / 2,
+                    (r.top + r.bottom) / 2 - window.innerHeight / 2);
+}
+function autoRunning() {
+  let n = 0;
+  for (const st of autoPreviews.values()) if (st.timer) n++;
+  return n;
+}
+/* Keep at most AUTO_MAX flipping at once. Returns false when the tile asking to start
+   is no nearer the middle of the screen than what is already running: without that gate
+   a busy grid thrashed, starting a tile only to retire it one step later. */
+function autoTrim(keepId) {
+  if (autoRunning() < AUTO_MAX) return true;            // budget left, nothing to retire
+  const running = [...autoPreviews].filter(([id, st]) => st.timer && id !== keepId);
+  if (!running.length) return true;
+  const mine = autoRank(autoCell(keepId));
+  let worst = -Infinity;
+  for (const [id] of running) worst = Math.max(worst, autoRank(autoCell(id)));
+  if (!(mine < worst)) return false;                   // no better placed than the incumbents
+  let over = running.length + 1 - AUTO_MAX;
+  running.sort((a, b) => autoRank(autoCell(b[0])) - autoRank(autoCell(a[0])));
+  for (const [id] of running) {
+    if (over-- <= 0) break;
+    autoPause(id);
+  }
+  return true;
+}
+/* Budget freed by tiles scrolling away goes to the best-placed paused tile still on
+   screen; without this a grid trimmed once would sit below the cap until a reload. */
+function autoFill() {
+  const vh = window.innerHeight;
+  const paused = [];
+  for (const [id, st] of autoPreviews) {
+    if (st.timer || !st.urls || st.urls.length < 2) continue;
+    const el = autoCell(id);
+    if (!el) continue;
+    const r = el.getBoundingClientRect();
+    if (r.bottom < 0 || r.top > vh) continue;          // off screen: not a candidate
+    paused.push([id, autoRank(el)]);
+  }
+  if (!paused.length) return;
+  paused.sort((a, b) => a[1] - b[1]);
+  for (const [id] of paused) {
+    if (autoRunning() >= AUTO_MAX) break;
+    autoStart(id);
+  }
+}
+
 function autoStart(id) {
   const st = autoPreviews.get(id);
   if (!st || st.timer || !framesOn()) return;
   if (!st.urls || st.urls.length < 2) return;
+  if (!autoTrim(id)) return;          // a better-placed tile already owns the budget
   const beat = st.urls.length > 3 ? AUTO_STRIP : AUTO_BEAT;
   st.timer = setInterval(() => {
     if (!framesOn()) { stopAutoPreview(); return; }
@@ -1539,16 +1594,20 @@ function startAutoPreview() {
       for (const e of entries) {
         const id = +e.target.dataset.id;
         if (e.isIntersecting) autoTile(e.target);
-        else autoPause(id);            // off screen: stop the work, keep the state
+        else { autoPause(id); autoFill(); }   // off screen: free the budget for the view
       }
     }, { rootMargin: "150px" });
   }
-  // START every tile now rather than waiting to be told it is visible: an
-  // IntersectionObserver that never fires (headless/embedded browsers do this)
-  // would leave the preview silently dead. The observer is only a hint to save
-  // work on tiles scrolled out of view.
-  const cells = [...document.querySelectorAll('#grid .cell[data-kind="video"]')].slice(0, AUTO_MAX);
-  for (const c of cells) autoTile(c);
+  // Every video tile is OBSERVED, not just the first AUTO_MAX in listing order: in a
+  // folder of 300 clips the old slice left tiles 49+ still for good, however far you
+  // scrolled. The ceiling is now on tiles RUNNING at once (autoTrim), ranked by
+  // distance from the middle of the screen, so the motion follows the viewport.
+  // The nearest ones still start immediately rather than waiting to be told they are
+  // visible: an IntersectionObserver that never fires (headless/embedded browsers do
+  // this) would otherwise leave the preview silently dead.
+  const cells = [...document.querySelectorAll('#grid .cell[data-kind="video"]')];
+  const nearest = cells.map(c => [c, autoRank(c)]).sort((a, b) => a[1] - b[1]);
+  for (const [c] of nearest.slice(0, AUTO_MAX)) autoTile(c);
   if (autoObserver) for (const c of cells) autoObserver.observe(c);
   // pause the whole show while the tab is in the background
   if (!window.__mxVisHooked) {
