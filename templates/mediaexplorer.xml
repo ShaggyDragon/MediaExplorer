@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <Container version="2">
   <Name>mediaexplorer</Name>
-  <Repository>mediaexplorer:latest</Repository>
-  <Registry/>
+  <Repository>shaggydragon/mediaexplorer:latest</Repository>
+  <Registry>https://ghcr.io</Registry>
   <Network>bridge</Network>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
