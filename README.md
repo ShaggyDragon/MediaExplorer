@@ -74,7 +74,7 @@ video, spread over nested folders nobody wants to tidy. The requirements that sh
 - Thumbnails live in one hidden `.Folder.mxthumbs` file beside each folder, zip or video
   — 60–400 thumbnails per file instead of thousands of loose JPEGs
 - Index and cache are separate: clearing the cache costs a re-encode, never data
-- Scan verbs name their scope: *here*, *in subfolders*, *in subfolders and zips*,
+- Scan verbs name their scope: *here*, *in subfolders*, *in subfolders and re-read every zip*,
   *rebuild thumbnails*, *build filmstrips*
 - Live progress: thumbnails appear as they are built, with a countdown and a queue
 - `python -m app.packtool verify|gc|stats|purge` for the thumbnail store
@@ -146,7 +146,7 @@ Scoped, never global — every job names the folder or zip it works on:
 |---|---|
 | Scan this folder | Scan button, or right-click → *Scan here* |
 | Scan subfolders | right-click → *Scan subfolders* |
-| Scan subfolders and zips | right-click → *Scan subfolders and zips* |
+| Scan subfolders and re-read every zip | right-click → *Scan this folder, subfolders and re-read every zip* (re-decodes every entry in every zip below) |
 | Rebuild thumbnails | right-click → *Re-encode thumbnails here / in subfolders* |
 | Build filmstrips | right-click → *Build filmstrips here / in subfolders* |
 

@@ -2790,8 +2790,12 @@ function showCtx(e, target) {
 
   const sz = $("#ctx-scan-deep-zips");
   sz.hidden = !isFolderish;
-  sz.textContent = "Scan this folder, subfolders and zips";
-  sz.title = "The same, and re-read every zip below this one to rebuild its thumbnails";
+  // The old wording ("Scan this folder, subfolders and zips") read as "also index the zips".
+  // It actually re-reads every archive below and rebuilds every entry thumbnail in it --
+  // the owner did not know it did that (v1.4.1), so the label now says "re-read".
+  sz.textContent = "Scan this folder, subfolders and re-read every zip";
+  sz.title = "Re-reads every zip below this one and rebuilds all of its entry thumbnails "
+           + "— a 300-image archive counts as 300 thumbnails, not as one zip";
 
   const ex = $("#ctx-expand");
   ex.hidden = !isFolderish;
