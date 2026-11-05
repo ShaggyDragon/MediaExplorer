@@ -932,6 +932,29 @@ function navFailed(e, url, tok) {
 
 /* ---------- reveal current path in left tree ---------- */
 let revealSeq = 0;
+/* Scroll #tree-pane so a row is fully visible, clearing the sticky "Up to" bar.
+   scrollIntoView({block:"nearest"}) is not enough on its own: a row parked against the
+   top of the scrollport still counts as "visible" while #tree-head draws over it, so
+   stepping back up a level left the newly selected folder sitting behind the bar. */
+function revealRow(n) {
+  if (!n || !n.isConnected) return;
+  const pane = document.getElementById("tree-pane");
+  if (!pane) return;
+  const box = pane.getBoundingClientRect();
+  const head = document.getElementById("tree-head");
+  const headBottom = head ? head.getBoundingClientRect().bottom : 0;   // 0 when hidden
+  const top = Math.max(box.top, headBottom) + 4;      // first usable line under the bar
+  const bottom = box.bottom - 8;
+  const r = n.getBoundingClientRect();
+  if (r.top < top) pane.scrollTop -= top - r.top;
+  else if (r.bottom > bottom) pane.scrollTop += r.bottom - bottom;
+}
+/* Reveal now, and again next frame: expanding a node re-renders its children, which
+   moves the row after we scrolled to where it used to be. */
+function revealRowSoon(n) {
+  revealRow(n);
+  requestAnimationFrame(() => revealRow(n));
+}
 async function revealTree(path) {
   const seq = ++revealSeq;
   if (!path || !path.length) return;
@@ -955,7 +978,7 @@ async function revealTree(path) {
   const lastKey = path[path.length - 1].loc != null
     ? "l" + path[path.length - 1].loc : "n" + path[path.length - 1].id;
   const last = document.querySelector(`#tree [data-key="${lastKey}"]`);
-  if (last && seq === revealSeq) last.scrollIntoView({ block: "nearest" });
+  if (last && seq === revealSeq) revealRowSoon(last);
 }
 function selectTreeNode(node) {
   document.querySelectorAll("#tree .sel").forEach(n => n.classList.remove("sel"));
@@ -987,14 +1010,14 @@ async function treeStep(d) {
   if (j === i) return;
   const n = nodes[j];
   selectTreeNode(n);
-  n.scrollIntoView({ block: "nearest" });
+  revealRowSoon(n);
   await openTreeNode(n);
   // ↓ behaves like a click: the folder you land on shows its subfolders and zips, so
   // the next ↓ walks into them instead of you having to aim at the caret
   if (n._kids && n._kids.hidden && !n.classList.contains("znode")) {
     await ensureNodeOpen(n, n.dataset.key.startsWith("l") ? null : +n.dataset.key.slice(1));
-    n.scrollIntoView({ block: "nearest" });
   }
+  revealRowSoon(n);          // children may have just grown the branch under the row
 }
 function treeExpand() {
   const n = document.querySelector("#tree .sel");
@@ -1006,7 +1029,7 @@ async function treeCollapse() {
   if (!n) return;
   if (n._kids && !n._kids.hidden) { n._kids.hidden = true; return; }
   const p = treeNodeParent(n);           // already collapsed: jump to parent
-  if (p) { selectTreeNode(p); p.scrollIntoView({ block: "nearest" }); await openTreeNode(p); }
+  if (p) { selectTreeNode(p); revealRowSoon(p); await openTreeNode(p); revealRowSoon(p); }
 }
 
 function pnull(v) { return v == null ? "" : v; }
