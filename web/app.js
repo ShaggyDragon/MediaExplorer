@@ -657,7 +657,7 @@ function applyLiveThumb(ev) {
     return;
   }
   const have = cell.querySelector("img");            // already has its picture
-  if (have) { swapIn(have); if (isVideo) autoRearm(cell); return; }   // ...but it may be the old one
+  if (have) { swapIn(have); if (isVideo) autoRearm(cell, ev.frames); return; }  // ...but it may be the old one
   const box = cell.querySelector(".thumbbox");
   const ph = box && box.querySelector(".ph");
   if (!box) return;
@@ -666,7 +666,7 @@ function applyLiveThumb(ev) {
   const im = img("data:image/jpeg;base64," + ev.d, cell.title || "");
   if (ph) ph.replaceWith(im); else box.appendChild(im);
   cell.dataset.live = "1";
-  if (isVideo) autoRearm(cell);       // the poster exists now: its frames may too
+  if (isVideo) autoRearm(cell, ev.frames);   // the event carries this clip's frame list
   // No badge to restore: a finished filmstrip already says "video" better than a
   // clapper glyph did (owner's call, v0.1.191). The ⚠ on a zip video is added by
   // the tile builder and is unaffected.
@@ -1544,63 +1544,32 @@ function autoPause(id) {
   if (st && st.timer) { clearInterval(st.timer); st.timer = 0; }
 }
 
+/* Nothing is asked here. The listing already carries every ready clip's frame list
+   (`frames: []` included, so "this clip has no strip" is an ANSWER, not a question), and
+   a poster that arrives later carries its list on the SSE event. Asking /api/frames per
+   tile was one request per clip per view -- the traffic the owner saw in the log
+   (owner, 1.4.5). A strip built later is picked up from the status counter (frames_gen). */
 function autoTile(cell) {
   const id = +cell.dataset.id;
   if (!id || !cell.dataset.kind || cell.dataset.kind !== "video") return;
   if (autoPreviews.has(id)) { autoStart(id); return; }
+  const urls = Array.isArray(vframes[id]) ? vframes[id] : null;
+  if (!urls || urls.length < 2) return;        // unknown, or a clip with nothing to flip
   const cur = cell.querySelector("img");
-  const st = {urls: vframes[id] || null, i: 0, timer: 0, poster: cur ? cur.src : null};
+  const st = {urls, i: 0, timer: 0, poster: cur ? cur.src : null};
   autoPreviews.set(id, st);
-  const begin = urls => {
-    if (!urls || urls.length < 2) { autoPreviews.delete(id); return; }
-    st.urls = urls;
-    // stagger the first step, or every tile in the grid flips together
-    setTimeout(() => autoStart(id), Math.floor(Math.random() * AUTO_BEAT));
-  };
-  if (st.urls && st.urls.length >= 2) { begin(st.urls); return; }
-  api(`/api/frames/${id}`).then(d => {
-    const fr = (d && d.frames) || [];
-    if (!fr.length) {                       // not built YET -- ask again shortly
-      autoPreviews.delete(id);
-      autoRetry(id);
-      return;
-    }
-    vframes[id] = fr;
-    autoTries.delete(id);
-    begin(fr);                              // fewer than 2 = a real "no strip"
-  }).catch(() => { autoPreviews.delete(id); autoRetry(id); });
+  // stagger the first step, or every tile in the grid flips together
+  setTimeout(() => { if (autoPreviews.get(id) === st) autoStart(id); },
+             Math.floor(Math.random() * AUTO_BEAT));
 }
 
-/* A clip that has no strip yet is not a clip that will never have one. The poster for
-   a folder you just opened is built while you watch and arrives over SSE; the two-still
-   flip (or the filmstrip, if one is being built) lands with it or shortly after. A tile
-   that asked before they existed used to be dropped for good, so the grid sat still
-   until the folder was revisited or the info pane forced a repaint (owner, 1.4.4:
-   "the new thumbnails are created, but do not animate"). Ask again with a backoff, and
-   stop believing once a minute has passed -- most clips simply have no strip. */
-const AUTO_ASK_MAX = 9;
-const autoTries = new Map();               // id -> attempts made
-
-function autoRetry(id) {
-  const n = autoTries.get(id) || 0;
-  if (n >= AUTO_ASK_MAX) { autoTries.delete(id); return; }
-  autoTries.set(id, n + 1);
-  setTimeout(() => {
-    const cell = document.querySelector(`#grid .cell[data-id="${id}"][data-kind="video"]`);
-    if (!cell) { autoTries.delete(id); return; }      // left this folder
-    delete vframes[id];                              // it may have grown since
-    autoTile(cell);
-  }, Math.min(1500 * Math.pow(1.7, n), 15000));
-}
-
-/* A poster just landed for a tile on screen: (re)arm its preview. Cheap -- one
-   /api/frames question, and only for a video cell. */
-function autoRearm(cell) {
+/* A poster just landed for a tile on screen: the event carries its frame list, so the
+   preview can start with no request at all. */
+function autoRearm(cell, frames) {
   if (!cell || cell.dataset.kind !== "video") return;
   if (!framesOn()) return;
   const id = +cell.dataset.id;
-  autoTries.delete(id);
-  delete vframes[id];
+  if (Array.isArray(frames)) vframes[id] = frames;
   autoPreviews.delete(id);
   autoTile(cell);
 }
@@ -1613,7 +1582,6 @@ function stopAutoPreview() {
     if (im && st.poster) im.src = st.poster;
   }
   autoPreviews.clear();
-  autoTries.clear();                   // pending re-asks belong to the grid being replaced
   if (autoObserver) { autoObserver.disconnect(); autoObserver = null; }
 }
 
@@ -2670,6 +2638,8 @@ let libPending = null;      // library-wide pending count, for the badge tooltip
    see progress. */
 let scanWork = null;        // {key, zip, parent, total, seen, deep} -- left = total - seen
 let lastStatus = null;      // the newest /api/scan/status, for the badge helper
+let lastFramesGen = null;   // media.frames_gen: a change means new filmstrips exist
+let reframesTimer = 0;      // one deferred re-list per change, not one per tile
 
 // A "counted down twice" report is invisible in sampled screenshots and gone by the time
 // anyone looks, so the badge keeps its own tape: every value it showed during a scan, and a
@@ -2724,8 +2694,28 @@ function settleBadge() {
   setTimeout(tick, 700);
 }
 
+/* One re-list per change, never one request per tile. Both the status poll and the
+   poster stream land here: a poster build changes a clip's frame list ([] -> poster + p1)
+   exactly as a filmstrip build does, so the counter covers both. */
+function checkFramesGen(st) {
+  if (!st || typeof st.frames_gen !== "number") return;
+  if (lastFramesGen === null) { lastFramesGen = st.frames_gen; return; }
+  if (st.frames_gen === lastFramesGen) return;
+  const b = st.building || {};
+  const busy = (b.active || 0) + (b.queued || 0);
+  // Work still landing: a re-list now throws away tiles the poster stream has already
+  // painted, and the listing it replaces is not complete yet -- the grid came back static
+  // and stayed static, because the events that would have fixed it were already spent.
+  // Leave the counter changed and let the settle path ask again when everything is idle.
+  if (busy || st.running) return;
+  lastFramesGen = st.frames_gen;
+  if (reframesTimer) return;
+  reframesTimer = setTimeout(() => { reframesTimer = 0; forgetFrames(); rerender(); }, 2500);
+}
+
 async function refreshStatus() {
   const st = await api("/api/scan/status");
+  checkFramesGen(st);
   // This runs after EVERY repaint (listing, sort, live thumb patch, navigation) and it
   // used to write the pending count over the badge unconditionally -- so mid-scan the
   // number fell back to "files here" and the next poll put the countdown back: the
@@ -2778,10 +2768,12 @@ function paintBuild(b) {
 async function pollBuild() {
   clearTimeout(buildTimer);
   buildTimer = 0;
-  let b = null;
-  try { b = (await api("/api/scan/status")).building; }
+  let st = null;
+  try { st = await api("/api/scan/status"); }
   catch (e) { return; }              // server restarting: the next listing asks again
+  const b = st && st.building;
   if (!b) return;
+  checkFramesGen(st);                // posters/filmstrips landing while we watch
   const wasBusy = buildSeen > 0;
   paintBuild(b);
   const total = (b.active || 0) + (b.queued || 0);

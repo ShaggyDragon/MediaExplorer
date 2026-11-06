@@ -1720,6 +1720,19 @@ def queue_durations(rows):
 #[video: poster + filmstrip live in ONE pack per video]
 
 POSTER_NAME = "poster.jpg"
+
+# Bumped whenever a filmstrip is written (any path: folder build, single clip, hover
+# build). The page polls /api/scan/status anyway; a changed number tells it that the
+# tiles it is showing may now have more frames, so it re-lists ONCE instead of asking
+# /api/frames per tile on a timer (owner: "there are a lot of API calls still listed").
+FRAMES_GEN = 0
+
+
+def frames_gen():
+    """How many filmstrips have been written this process. Read-only counter for the
+    status endpoint: a page that sees it change re-lists once to pick up new frames."""
+    return FRAMES_GEN
+
 # The second image of the two-image preview lives under its own name. It used to be
 # written as f00 -- the same name a filmstrip uses for its FIRST frame (6% in) -- so
 # after a strip existed, "the second image" silently meant the opening shot, and a
@@ -2053,8 +2066,28 @@ def ensure_video_poster(node_id, force=False):
                    {name: (row["size"], row["mtime"]) for name in members})
     # Image packs streamed their bytes to the page, but a video poster did not:
     # the tile sat on its 🎬 placeholder until the folder was listed again.
-    events.publish_thumb(node_id, blob, int(float(row["mtime"] or 0) * 1000),
-                         parent=row["parent_id"])
+    # The frame list rides along (the pack was just written, so it is two reads of an
+    # index we already have): without it every video tile asked /api/frames straight
+    # afterwards, which is the per-clip request the owner saw in the log.
+    stamp = int(float(row["mtime"] or 0) * 1000)
+    try:
+        # Same cache-busting idea as server.thumb_vstamp (mtime, generation, pack offset, store
+        # epoch), computed here because media owns the pack and cannot import the server module.
+        fresh = one("SELECT mtime, thumb_gen, pack_off FROM nodes WHERE id=?", (node_id,))
+        if fresh is not None:
+            v = (f"{fresh['mtime']}-{fresh['thumb_gen'] or 0}-{fresh['pack_off'] or 0}")
+        else:
+            v = f"{row['mtime']}"
+        fl = [f"/api/framefile/{node_id}/{n}?v={v}" for n in existing_frames(node_id)]
+    except Exception as e:                    # telemetry/event enrichment must not fail a build
+        log.warning("poster for node %s: frame list unavailable: %s", node_id, e)
+        fl = None
+    # A poster build also writes the second still, i.e. it CHANGES this clip's frame list
+    # ([] -> poster + p1). Pages watching the folder re-list once on the counter change,
+    # which is how that answer reaches them without a request per tile.
+    global FRAMES_GEN
+    FRAMES_GEN += 1
+    events.publish_thumb(node_id, blob, stamp, parent=row["parent_id"], frames=fl)
     return path
 
 
@@ -2162,6 +2195,8 @@ def ensure_video_pack(node_id, force=False):
         # Building a filmstrip is the owner asking for the strip: clear the "two images
         # only" flag a re-encode may have set, or the strip would stay hidden.
         exec_many("UPDATE nodes SET preview_only=0 WHERE id=?", (node_id,))
+        global FRAMES_GEN
+        FRAMES_GEN += 1                  # a page watching this folder re-lists on the change
         return [n for n in want if ns + n in members]
     finally:
         with _IFLOCK:

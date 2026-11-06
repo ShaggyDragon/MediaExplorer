@@ -61,15 +61,19 @@ def listening():
         return bool(_subs)
 
 
-def publish_thumb(node_id, blob, stamp, kind="node", parent=None, zip_id=None):
+def publish_thumb(node_id, blob, stamp, kind="node", parent=None, zip_id=None, frames=None):
     """One thumbnail is ready: send its bytes so the tile can paint now.
 
     `parent`/`zip_id` say where it belongs, so the page can count a running scan
-    down without guessing which folder an event came from."""
+    down without guessing which folder an event came from. `frames` rides along for a
+    video: the tile can start its preview from this event instead of asking
+    /api/frames afterwards, which was one request per clip per view (owner: too many)."""
     if not listening():
         return False
     ev = {"t": "thumb", "k": kind, "id": node_id, "v": stamp,
           "d": base64.b64encode(blob).decode("ascii")}
+    if frames is not None:
+        ev["frames"] = frames
     if parent is not None:
         ev["p"] = parent
     if zip_id is not None:

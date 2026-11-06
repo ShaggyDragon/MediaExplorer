@@ -40,10 +40,16 @@ if not logging.getLogger().handlers:
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
                         datefmt="%Y-%m-%d %H:%M:%S%z")
 log.setLevel(logging.INFO)
+# The access log answers "which tile asked what", which is only useful while debugging a
+# request storm -- and by default it buries the lines that matter (scan outcomes, damaged
+# zips, failures) under one line per tile and image. Off unless asked for: MX_ACCESS_LOG=1.
+if os.environ.get("MX_ACCESS_LOG", "").strip().lower() not in ("1", "true", "yes", "on"):
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
 from .info import picture_info, video_info
 from .media import (build_stats, HW_REASON, _HW_NOTE, node_abspath, video_member_bytes, POSTER_NAME,
-                    queue_durations, fail_reset, fail_summary, note_fail,
+                    queue_durations, fail_reset, fail_summary, note_fail, frames_gen,
                     ZIP_TILE, queue_zip_tile, queue_video_poster, queue_frames,
                     queue_dir_tile, rebuild_scope, relink_orphans,
                     existing_frames, diff_dir, index_zip, zip_has_video,
@@ -937,7 +943,8 @@ def api_children(loc: int, parent: int | None = None, sort: str = "name",
         # only a real navigation logs; the 1.5s re-polls while thumbnails land pass nav=0
         crumbs = breadcrumb(l, parent)
         label = " / ".join([l["name"]] + [c["name"] for c in crumbs[1:]]) if crumbs else l["name"]
-        _log_open(label, len(pend))
+        _log_open(label, len(pend), items=len(rows),
+                  clips=sum(1 for r in rows if r["kind"] == "video"))
     row_here = node_by_id(parent) if parent is not None else None   # rel for the pin
     return {"path": breadcrumb(l, parent),
             "rel": (row_here["rel"] if row_here is not None else ""),
@@ -1626,8 +1633,23 @@ def _why_tag(why):
     return f" [{why}]" if why else ""
 
 
-def _log_open(label, pending, kind="folder"):
-    """A folder/zip opened in the browser: what work that navigation just set going."""
+def _log_open(label, pending, kind="folder", items=None, clips=None):
+    """A folder/zip opened in the browser: what work that navigation just set going.
+
+    This is the log's answer to "what was I looking at, and when". It used to write only
+    to the in-app ring, and only when something needed building, so a healthy navigation
+    left no trace at all -- which is why the file looked empty of anything but requests.
+    One line per navigation is cheap; it is the per-tile request lines that were noise."""
+    try:
+        if items is None:
+            log.info("opened %s", label)
+        else:
+            extra = f", {clips} clip{'' if clips == 1 else 's'}" if clips is not None else ""
+            need = f", {pending} without a picture" if pending else ""
+            log.info("opened %s: %d item%s%s%s", label, items,
+                     "" if items == 1 else "s", extra, need)
+    except Exception:
+        pass
     if not pending:
         return
     try:
@@ -2365,6 +2387,10 @@ def api_scan_status():
         st = dict(scan_state)
     st["pending"] = pending_media_count()
     st["building"] = build_stats()      # work in flight, so a stall cannot be silent
+    # A filmstrip written anywhere (folder build, one clip, a hover build in another tab)
+    # bumps this. The page polls this endpoint anyway, so a changed number is how it learns
+    # to re-list once -- instead of asking /api/frames per tile on a timer.
+    st["frames_gen"] = frames_gen()
     return st
 
 
