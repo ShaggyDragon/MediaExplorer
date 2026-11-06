@@ -633,6 +633,7 @@ function applyLiveThumb(ev) {
     cell.dataset.live = "1";
   };
   const isMosaic = cell.dataset.kind === "zip" || cell.dataset.kind === "dir";
+  const isVideo = cell.dataset.kind === "video";
   if (isMosaic) {          // zip/folder tile: one composed JPEG, fills in whole
     let zb = cell.querySelector(".zipbox");
     const cur = zb && (zb.querySelector("img.tile") || zb.querySelector(".samples img"));
@@ -656,7 +657,7 @@ function applyLiveThumb(ev) {
     return;
   }
   const have = cell.querySelector("img");            // already has its picture
-  if (have) { swapIn(have); return; }                // ...but it may be the old one
+  if (have) { swapIn(have); if (isVideo) autoRearm(cell); return; }   // ...but it may be the old one
   const box = cell.querySelector(".thumbbox");
   const ph = box && box.querySelector(".ph");
   if (!box) return;
@@ -665,6 +666,7 @@ function applyLiveThumb(ev) {
   const im = img("data:image/jpeg;base64," + ev.d, cell.title || "");
   if (ph) ph.replaceWith(im); else box.appendChild(im);
   cell.dataset.live = "1";
+  if (isVideo) autoRearm(cell);       // the poster exists now: its frames may too
   // No badge to restore: a finished filmstrip already says "video" better than a
   // clapper glyph did (owner's call, v0.1.191). The ⚠ on a zip video is added by
   // the tile builder and is unaffected.
@@ -1555,12 +1557,52 @@ function autoTile(cell) {
     // stagger the first step, or every tile in the grid flips together
     setTimeout(() => autoStart(id), Math.floor(Math.random() * AUTO_BEAT));
   };
-  if (st.urls) { begin(st.urls); return; }
+  if (st.urls && st.urls.length >= 2) { begin(st.urls); return; }
   api(`/api/frames/${id}`).then(d => {
-    if (!d.frames || !d.frames.length) { autoPreviews.delete(id); return; }
-    vframes[id] = d.frames;
-    begin(d.frames);
-  }).catch(() => autoPreviews.delete(id));
+    const fr = (d && d.frames) || [];
+    if (!fr.length) {                       // not built YET -- ask again shortly
+      autoPreviews.delete(id);
+      autoRetry(id);
+      return;
+    }
+    vframes[id] = fr;
+    autoTries.delete(id);
+    begin(fr);                              // fewer than 2 = a real "no strip"
+  }).catch(() => { autoPreviews.delete(id); autoRetry(id); });
+}
+
+/* A clip that has no strip yet is not a clip that will never have one. The poster for
+   a folder you just opened is built while you watch and arrives over SSE; the two-still
+   flip (or the filmstrip, if one is being built) lands with it or shortly after. A tile
+   that asked before they existed used to be dropped for good, so the grid sat still
+   until the folder was revisited or the info pane forced a repaint (owner, 1.4.4:
+   "the new thumbnails are created, but do not animate"). Ask again with a backoff, and
+   stop believing once a minute has passed -- most clips simply have no strip. */
+const AUTO_ASK_MAX = 9;
+const autoTries = new Map();               // id -> attempts made
+
+function autoRetry(id) {
+  const n = autoTries.get(id) || 0;
+  if (n >= AUTO_ASK_MAX) { autoTries.delete(id); return; }
+  autoTries.set(id, n + 1);
+  setTimeout(() => {
+    const cell = document.querySelector(`#grid .cell[data-id="${id}"][data-kind="video"]`);
+    if (!cell) { autoTries.delete(id); return; }      // left this folder
+    delete vframes[id];                              // it may have grown since
+    autoTile(cell);
+  }, Math.min(1500 * Math.pow(1.7, n), 15000));
+}
+
+/* A poster just landed for a tile on screen: (re)arm its preview. Cheap -- one
+   /api/frames question, and only for a video cell. */
+function autoRearm(cell) {
+  if (!cell || cell.dataset.kind !== "video") return;
+  if (!framesOn()) return;
+  const id = +cell.dataset.id;
+  autoTries.delete(id);
+  delete vframes[id];
+  autoPreviews.delete(id);
+  autoTile(cell);
 }
 
 function stopAutoPreview() {
@@ -1571,6 +1613,7 @@ function stopAutoPreview() {
     if (im && st.poster) im.src = st.poster;
   }
   autoPreviews.clear();
+  autoTries.clear();                   // pending re-asks belong to the grid being replaced
   if (autoObserver) { autoObserver.disconnect(); autoObserver = null; }
 }
 
