@@ -554,6 +554,9 @@ function patchTiles(items) {
   const g = $("#grid");
   if (!g) return 0;
   let filled = 0;
+  // the bar counts pictures the server owed this folder; the fallback poll delivers
+  // them too, so it has to advance here and not only on the SSE stream
+  for (const it of items) if (it.thumb) lbNoteThumb(it.id);
   for (const it of items) {
     const cell = g.querySelector(`.cell[data-id="${it.id}"]`);
     if (!cell || cell.querySelector("img") || !it.thumb) continue;
@@ -617,6 +620,7 @@ function thumbRetry(im, it, tries) {
 function applyLiveThumb(ev) {
   const g = $("#grid");
   if (!g) return;
+  lbNoteThumb(ev.id);          // the bar above the grid is counting these arrivals
   const cell = g.querySelector(`.cell[data-id="${ev.id}"]`);
   if (!cell) return;
   // A tile that ALREADY has a picture is the re-encode case -- a Scan or "Re-encode
@@ -1271,6 +1275,7 @@ function renderGrid(items) {
   g.style.setProperty("--tw", state.size + "px");
   if (!items.length) {
     g.appendChild(div("empty", "Empty folder."));
+    hideLoadbar();
     if (moved) {
     // Back/forward restores the offset you left that view at; any other move into a
     // folder or zip starts at its first file.
@@ -1288,59 +1293,111 @@ function renderGrid(items) {
     g.scrollTop = historyNav ? (scrollMemo.get(viewKey) || 0) : 0;
     g.scrollLeft = 0;
   }
-  watchLoad();
+  lbStart(items);
 }
 
 /* ---------- how much of this folder is actually here yet ----------
-   A folder of 300 zips spends a long time with tiles that have no picture: each
-   zip's 2x2 is composed on the server from four photos inside the archive, and a
-   folder whose thumbnails are still being encoded looks exactly like a broken one.
-   This counts what is on screen (plus one screen ahead -- further down the images
-   are loading="lazy" and nobody is waiting for them) and shows the number above the
-   grid until it reaches zero. */
-let loadWatch = 0;
-function loadPending() {
+   TWO different waits, and mixing them is what made the old bar twitch:
+
+   "Building"  the server has not composed this tile's picture yet (the 2x2 of a zip,
+               a folder's face, a video's poster). The total is the whole folder, it
+               only ever goes up, and it is the number that matters in a folder of
+               300 zips. Driven by the SSE stream, so it costs nothing to watch.
+
+   "Loading"   the pictures exist; the browser is fetching the ones on screen. The
+               set is FROZEN when the folder is drawn, so scrolling can neither raise
+               the total nor send the bar backwards.
+
+   The old bar re-measured "cells within one screen of the viewport" every 350ms and
+   recomputed both numbers each tick -- so every scroll step redefined what was being
+   counted: the owner's "it changes total files and it moves back and forward as you
+   scroll down". */
+let lb = null;           // {mode, need:Set, have:Set, vis:[ids], visTotal, best, stall}
+let lbTimer = 0;
+
+function needsPicture(it) {
+  // what mosaicTile()/tile() can draw with no server work: a composed thumb, or
+  // sample pictures a zip/folder tile can show while its face is still being built
+  if (it.thumb) return false;
+  if (it.kind === "dir" || it.kind === "zip") return !(it.samples || []).length;
+  return true;
+}
+
+function hideLoadbar() {
+  const bar = $("#loadbar");
+  if (bar) bar.hidden = true;
+}
+
+function lbStart(items) {
+  hideLoadbar();
+  lb = null;
+  if (lbTimer) { clearInterval(lbTimer); lbTimer = 0; }
   const g = $("#grid");
-  if (!g) return { done: 0, total: 0 };
-  const box = g.getBoundingClientRect();
-  let done = 0, total = 0;
-  for (const c of g.children) {
-    if (!c.classList || !c.classList.contains("cell")) continue;
-    const r = c.getBoundingClientRect();
-    if (r.bottom < box.top - box.height || r.top > box.bottom + box.height) continue;
-    total++;
-    const im = c.querySelector(".thumbbox img");
+  if (!g) return;
+  const need = new Set();
+  for (const it of items) if (needsPicture(it)) need.add(String(it.id));
+  // the on-screen batch, frozen here so it cannot drift while the owner scrolls
+  const vis = [];
+  const h = g.clientHeight || 1;
+  for (const c of g.querySelectorAll(".cell")) {
+    const y = c.offsetTop - g.scrollTop;
+    if (y > -h * 0.5 && y < h * 2) vis.push(c.dataset.id);
+  }
+  lb = { mode: need.size ? "build" : "load", need, have: new Set(),
+         vis, visTotal: vis.length, best: 0, stall: 0 };
+  if (lbPaint() && (lb.need.size || lb.visTotal)) lbTick();
+}
+
+/* A picture the server owed the folder has just arrived (SSE, or the fallback poll). */
+function lbNoteThumb(id) {
+  if (!lb || lb.mode !== "build") return;
+  const k = String(id);
+  if (!lb.need.has(k) || lb.have.has(k)) return;
+  lb.have.add(k);
+  lbPaint();
+}
+
+function lbPaint() {
+  const bar = $("#loadbar"), txt = $("#loadbar-text");
+  if (!bar || !lb) return null;
+  if (lb.mode === "build") {
+    // a build that delivers nothing for a minute is not a build we can report on: the
+    // tiles below have not been asked for yet (a hidden tab never fires the lazy loads)
+    // or the queue dropped the work -- either way, stop showing a number that cannot move
+    if (lb.have.size) lb.stall = 0;
+    else if (++lb.stall > 240) { hideLoadbar(); return null; }
+    bar.hidden = false;
+    bar.style.setProperty("--p", (lb.have.size / lb.need.size * 100).toFixed(1) + "%");
+    txt.textContent = `Building pictures ${lb.have.size} of ${lb.need.size}`;
+    if (lb.have.size < lb.need.size) return { mode: "build", done: lb.have.size, total: lb.need.size };
+    // server is finished: whatever the browser still owes on screen from here
+    lb.mode = "load"; lb.best = 0; lb.stall = 0;
+  }
+  let done = 0;
+  for (const id of lb.vis) {
+    const c = $(`#grid .cell[data-id="${id}"]`);
+    const im = c && c.querySelector(".thumbbox img");
     if (im && im.complete && im.naturalWidth) done++;
   }
-  return { done, total };
-}
-function paintLoadbar() {
-  const bar = $("#loadbar");
-  if (!bar) return { done: 0, total: 0 };
-  const { done, total } = loadPending();
-  if (!total || done >= total) { bar.hidden = true; return { done, total }; }
+  if (done > lb.best) { lb.best = done; lb.stall = 0; } // never run backwards
+  else lb.stall++;
+  if (!lb.visTotal || lb.best >= lb.visTotal || lb.stall > 12) {
+    // finished, or nothing has moved for ~3s (the owner scrolled away from the batch
+    // that is loading): stop nagging and get out of the pictures' way
+    hideLoadbar();
+    return null;
+  }
   bar.hidden = false;
-  bar.style.setProperty("--p", (done / total * 100).toFixed(1) + "%");
-  $("#loadbar-text").textContent = `Loading pictures ${done} of ${total}`;
-  return { done, total };
+  bar.style.setProperty("--p", (lb.best / lb.visTotal * 100).toFixed(1) + "%");
+  txt.textContent = `Loading pictures ${lb.best} of ${lb.visTotal}`;
+  return { mode: "load", done: lb.best, total: lb.visTotal };
 }
-function watchLoad() {
-  if (!watchLoad.bound) {
-    watchLoad.bound = true;
-    // scrolling brings rows that are still empty into view: keep the count honest
-    $("#grid").addEventListener("scroll", () => {
-      const bar = $("#loadbar");
-      if (bar && !bar.hidden) paintLoadbar();
-    }, { passive: true });
-  }
-  const first = paintLoadbar();
-  if (first.total && first.done < first.total && !loadWatch) {
-    let ticks = 0;
-    loadWatch = setInterval(() => {
-      const { done, total } = paintLoadbar();
-      if (!total || done >= total || ++ticks > 300) { clearInterval(loadWatch); loadWatch = 0; }
-    }, 350);
-  }
+
+function lbTick() {
+  if (lbTimer) return;
+  lbTimer = setInterval(() => {
+    if (!lbPaint()) { clearInterval(lbTimer); lbTimer = 0; }   // null = nothing left to report
+  }, 250);
 }
 
 /* ---------- video thumbnail hover flipbook (filmstrip frames) ----------
