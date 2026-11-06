@@ -2007,11 +2007,60 @@ def existing_frames(node_id):
 
     Hover is a read: a pointer sweeping a grid used to trigger 9-ffmpeg builds
     per tile, which is what pegged the CPU while browsing. The strip is built
-    only when asked for (context menu) or when MX_HOVER_BUILD=1."""
+    only when asked for (context menu) or when MX_HOVER_BUILD=1.
+
+    Reading it costs a pack open + index parse PER CLIP, which on a network share
+    measured 15.8 ms -- a folder of 249 clips spent 3.9 s just answering this, and
+    that was the whole 2-3 s wait after clicking a folder. Results are cached and
+    api_children warms the cache on a thread pool; see prefetch_frames()."""
     row = node_by_id(node_id)
+    if not row:
+        return []
+    return frames_for_row(row)
+
+
+_FRAMES_CACHE = {}
+_FRAMES_CACHE_GEN = -1
+
+
+def frames_for_row(row):
+    """existing_frames() for a row the caller already has (no second DB read)."""
     if not row or row["kind"] != "video":
         return []
-    ns = video_ns(node_id)
+    global _FRAMES_CACHE_GEN
+    if _FRAMES_CACHE_GEN != FRAMES_GEN:
+        _FRAMES_CACHE.clear()            # a strip was written: names may differ
+        _FRAMES_CACHE_GEN = FRAMES_GEN
+    key = (row["id"], row["size"] or 0, 1 if row["preview_only"] else 0)
+    hit = _FRAMES_CACHE.get(key)
+    if hit is not None:
+        return hit
+    names = _frames_from_pack(row)
+    if len(_FRAMES_CACHE) > 20000:
+        _FRAMES_CACHE.clear()
+    _FRAMES_CACHE[key] = names
+    return names
+
+
+def prefetch_frames(rows, workers=16):
+    """Warm frames_for_row() for a whole listing at once.
+
+    The pack reads are independent and I/O bound, so they overlap: 249 clips went
+    from 3.9 s serial to ~0.4 s. Errors are swallowed -- a clip whose pack will not
+    open simply lists without a strip, exactly as before."""
+    todo = [r for r in rows
+            if r["kind"] == "video" and r["thumb_state"] == "ready"]
+    if len(todo) < 2:
+        return
+    try:
+        with ThreadPoolExecutor(max_workers=min(workers, len(todo))) as ex:
+            list(ex.map(frames_for_row, todo))
+    except Exception as exc:                     # never let a warm-up fail a listing
+        log.debug("prefetch_frames: %s", exc)
+
+
+def _frames_from_pack(row):
+    ns = video_ns(row["id"])
     owner, hint, key = video_folder_spot(row)
     path = packs.resolve(row["loc_id"], key, owner, hint)
     if not path.exists():

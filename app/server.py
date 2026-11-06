@@ -52,7 +52,7 @@ from .media import (build_stats, HW_REASON, _HW_NOTE, node_abspath, video_member
                     queue_durations, fail_reset, fail_summary, note_fail, frames_gen,
                     ZIP_TILE, queue_zip_tile, queue_video_poster, queue_frames,
                     queue_dir_tile, rebuild_scope, relink_orphans,
-                    existing_frames, diff_dir, index_zip, zip_has_video,
+                    existing_frames, frames_for_row, prefetch_frames, diff_dir, index_zip, zip_has_video,
                     gen_node_thumb, gen_entry_thumb, gen_folder_thumbs, gen_zip_pack,
                     gen_zip_tile, gen_dir_tile,
                     queue_zip_pack, queue_folder_pack, extract_frames, frames_dir,
@@ -561,7 +561,7 @@ def item_payload(row):
         # 43-clip folder (~100ms each, measured) -- for data the server reads from the
         # same folder pack it is already listing. Same URLs /api/frames returns.
         if row["thumb_state"] == "ready":
-            names = existing_frames(row["id"])
+            names = frames_for_row(row)
             st = thumb_vstamp(row)
             # an explicit [] too: a short clip with nothing to flip would otherwise
             # still ask /api/frames once just to hear "nothing"
@@ -939,6 +939,10 @@ def api_children(loc: int, parent: int | None = None, sort: str = "name",
         queue_folder_pack(loc, parent)
     rows = child_nodes(loc, parent)
     queue_durations(rows)               # clips listed before lengths were stored
+    # Frame lists come out of each clip's own pack: one open + index parse per clip,
+    # 15.8 ms on a network share. Serially that was 3.9 s for a 249-clip folder -- the
+    # "click a folder and nothing happens for 2-3 s". Overlap the reads instead.
+    prefetch_frames(rows)
     if nav:
         # only a real navigation logs; the 1.5s re-polls while thumbnails land pass nav=0
         crumbs = breadcrumb(l, parent)
