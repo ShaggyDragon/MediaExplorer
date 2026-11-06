@@ -155,28 +155,25 @@ body {
 
 #grid {
   flex: 1 1 auto; overflow: auto; padding: 14px;
-  /* constant, so the floating progress bar never covers the last row and showing
-     or hiding the bar cannot change the grid's height */
-  padding-bottom: 46px;
   display: grid; gap: 10px; align-content: start;
   grid-template-columns: repeat(auto-fill, minmax(var(--tw, 220px), 1fr));
   grid-auto-rows: max-content;   /* rows follow content, never container height */
 }
 
-/* How much of a folder is actually there yet. Floats OVER the bottom of the grid
-   rather than sitting above it: a bar in the flow pushed every picture down when it
-   appeared and pulled them back up when it left, which read as the window resizing
-   itself (owner, v1.4.8). It never takes clicks -- pointer-events: none -- so the
-   last row of tiles underneath is still clickable. */
+/* How much of a folder is actually there yet. Floats OVER the TOP edge of the grid:
+   it belongs at the top of the view (owner's call), but a bar in the flow pushed every
+   picture down when it appeared and pulled them back up when it left, which read as the
+   window resizing itself. absolute + pointer-events:none gives the position without the
+   reflow, and the last row is not covered the way it was when this floated at the bottom. */
 #gridwrap { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; position: relative; }
 #loadbar {
-  position: absolute; left: 0; right: 0; bottom: 0; z-index: 12;
+  position: absolute; left: 0; right: 0; top: 0; z-index: 12;
   display: flex; align-items: center; gap: 12px;
   padding: 8px 14px; pointer-events: none;
   background: color-mix(in srgb, var(--bg2) 84%, transparent);
   -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
-  border-top: 1px solid var(--border);
-  box-shadow: 0 -8px 20px rgba(0, 0, 0, .35);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, .35);
   color: var(--fg2); font-size: 12px; font-variant-numeric: tabular-nums;
 }
 #loadbar[hidden] { display: none; }
@@ -452,7 +449,7 @@ body {
 #btn-up .up-to b { color: var(--fg); font-weight: 600; }
 
 /* -- grid tiles -- */
-#gridwrap > #grid { gap: 18px 14px; padding: 18px; padding-bottom: 52px; }
+#gridwrap > #grid { gap: 18px 14px; padding: 18px; padding-top: 46px; }
 .cell {
   background: transparent; border: 0; border-radius: 0; overflow: visible;
   transition: transform .14s ease; }
