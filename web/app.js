@@ -3464,10 +3464,11 @@ function hopReset() {
 }
 
 /* Is the grid pinned at an edge it should be reading past? 1 bottom, -1 top, 0 no.
-   `dir` is the way the user is scrolling, and it decides a list that cannot scroll
-   at all: a folder of two zips is at its top AND its bottom, so scrolling down reads
-   on and scrolling up reads back, the same way it would in a long list. Without that
-   a hop into a short folder was a one-way door. The location root is not a container
+   `dir` is the way the user is scrolling. A list that cannot scroll is NOT an edge:
+   nothing moved, so there is no "bottom" for the owner to see, and the pill appearing
+   the moment a two-item folder is wheeled reads as a bug (it did, 2026-11-06). Leaving
+   a short folder stays available through the breadcrumb, Backspace and Alt+←, which are
+   visible affordances rather than a silent jump. The location root is not a container
    and never hops. */
 function hopEdge(dir) {
   if (!($("#viewer") && $("#viewer").hidden)) return 0;
@@ -3476,7 +3477,7 @@ function hopEdge(dir) {
   const g = $("#grid");
   if (!g) return 0;
   const room = g.scrollHeight - g.clientHeight;
-  if (room < 80) return dir ? (dir > 0 ? 1 : -1) : 0;
+  if (room <= 2) return 0;                 // nothing to scroll -- no edge, no pill
   if (g.scrollTop >= room - 2) return 1;
   if (g.scrollTop <= 2) return -1;
   return 0;
