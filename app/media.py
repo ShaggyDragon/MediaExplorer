@@ -2042,14 +2042,27 @@ def frames_for_row(row):
     return names
 
 
+def frames_cached(row):
+    """True when frames_for_row() would answer without touching the pack."""
+    if not row or row["kind"] != "video":
+        return True
+    if _FRAMES_CACHE_GEN != FRAMES_GEN:
+        return False
+    return (row["id"], row["size"] or 0, 1 if row["preview_only"] else 0) in _FRAMES_CACHE
+
+
 def prefetch_frames(rows, workers=16):
     """Warm frames_for_row() for a whole listing at once.
 
     The pack reads are independent and I/O bound, so they overlap: 249 clips went
     from 3.9 s serial to ~0.4 s. Errors are swallowed -- a clip whose pack will not
-    open simply lists without a strip, exactly as before."""
+    open simply lists without a strip, exactly as before.
+
+    Only uncached clips are queued: the page re-lists every 1.5 s while thumbnails
+    land, and a warm listing must not spin up a thread pool to read its own cache."""
     todo = [r for r in rows
-            if r["kind"] == "video" and r["thumb_state"] == "ready"]
+            if r["kind"] == "video" and r["thumb_state"] == "ready"
+            and not frames_cached(r)]
     if len(todo) < 2:
         return
     try:
