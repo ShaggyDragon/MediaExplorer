@@ -44,7 +44,13 @@
     <div id="tree"></div>
   </aside>
   <div id="resizer"></div>
-  <section id="grid"></section>
+  <div id="gridwrap">
+    <div id="loadbar" hidden role="status" aria-live="polite">
+      <span id="loadbar-text"></span>
+      <span class="lb-track"><i id="loadbar-fill"></i></span>
+    </div>
+    <section id="grid"></section>
+  </div>
 </div>
 
 <div id="viewer" hidden>

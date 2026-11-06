@@ -1288,6 +1288,59 @@ function renderGrid(items) {
     g.scrollTop = historyNav ? (scrollMemo.get(viewKey) || 0) : 0;
     g.scrollLeft = 0;
   }
+  watchLoad();
+}
+
+/* ---------- how much of this folder is actually here yet ----------
+   A folder of 300 zips spends a long time with tiles that have no picture: each
+   zip's 2x2 is composed on the server from four photos inside the archive, and a
+   folder whose thumbnails are still being encoded looks exactly like a broken one.
+   This counts what is on screen (plus one screen ahead -- further down the images
+   are loading="lazy" and nobody is waiting for them) and shows the number above the
+   grid until it reaches zero. */
+let loadWatch = 0;
+function loadPending() {
+  const g = $("#grid");
+  if (!g) return { done: 0, total: 0 };
+  const box = g.getBoundingClientRect();
+  let done = 0, total = 0;
+  for (const c of g.children) {
+    if (!c.classList || !c.classList.contains("cell")) continue;
+    const r = c.getBoundingClientRect();
+    if (r.bottom < box.top - box.height || r.top > box.bottom + box.height) continue;
+    total++;
+    const im = c.querySelector(".thumbbox img");
+    if (im && im.complete && im.naturalWidth) done++;
+  }
+  return { done, total };
+}
+function paintLoadbar() {
+  const bar = $("#loadbar");
+  if (!bar) return { done: 0, total: 0 };
+  const { done, total } = loadPending();
+  if (!total || done >= total) { bar.hidden = true; return { done, total }; }
+  bar.hidden = false;
+  bar.style.setProperty("--p", (done / total * 100).toFixed(1) + "%");
+  $("#loadbar-text").textContent = `Loading pictures ${done} of ${total}`;
+  return { done, total };
+}
+function watchLoad() {
+  if (!watchLoad.bound) {
+    watchLoad.bound = true;
+    // scrolling brings rows that are still empty into view: keep the count honest
+    $("#grid").addEventListener("scroll", () => {
+      const bar = $("#loadbar");
+      if (bar && !bar.hidden) paintLoadbar();
+    }, { passive: true });
+  }
+  const first = paintLoadbar();
+  if (first.total && first.done < first.total && !loadWatch) {
+    let ticks = 0;
+    loadWatch = setInterval(() => {
+      const { done, total } = paintLoadbar();
+      if (!total || done >= total || ++ticks > 300) { clearInterval(loadWatch); loadWatch = 0; }
+    }, 350);
+  }
 }
 
 /* ---------- video thumbnail hover flipbook (filmstrip frames) ----------

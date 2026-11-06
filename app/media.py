@@ -614,25 +614,34 @@ def gen_zip_tile(zip_id, force=False):
                  " ORDER BY name LIMIT 4", (zip_id,))
     if not ents:
         return 0
-    cells = []
+    # Cheapest source first: entry thumbnails that are ALREADY encoded. The archive
+    # path below reads four photos out of the zip and decodes them full size, which
+    # on a spinning disk is seconds per archive -- the reason a folder of zips took
+    # a minute to fill in. A zip that has been scanned or opened has its entries in a
+    # pack, and a 300x225 tile only needs 150x112 cells, so four pack reads are not
+    # just faster, they are enough. Fall back to the archive when they are missing.
+    cells = _entry_cells(ents)
+    if len(cells) < len(ents):
+        cells = []
     touched = []
-    for er in ents:
-        # The tile is built from the first four images without a full scan, so this is
-        # often the first time an archive is looked into at all: record what it finds.
-        try:
-            raw = zip_entry_bytes(zrow, er)
-        except Exception as e:
-            _defect_note(zip_id, er["name"], "archive", _why(e), er["size"] or 0)
-            touched.append(er["name"])
-            continue
-        try:
-            cells.append(Image.open(io.BytesIO(raw)).convert("RGB"))
-            if _defect_clear_if_any(zip_id, er["name"]):
+    if not cells:
+        for er in ents:
+            # The tile is built from the first four images without a full scan, so this is
+            # often the first time an archive is looked into at all: record what it finds.
+            try:
+                raw = zip_entry_bytes(zrow, er)
+            except Exception as e:
+                _defect_note(zip_id, er["name"], "archive", _why(e), er["size"] or 0)
                 touched.append(er["name"])
-        except Exception as e:
-            _defect_note(zip_id, er["name"], "image", _why(e), er["size"] or 0)
-            touched.append(er["name"])
-            continue
+                continue
+            try:
+                cells.append(Image.open(io.BytesIO(raw)).convert("RGB"))
+                if _defect_clear_if_any(zip_id, er["name"]):
+                    touched.append(er["name"])
+            except Exception as e:
+                _defect_note(zip_id, er["name"], "image", _why(e), er["size"] or 0)
+                touched.append(er["name"])
+                continue
     if touched:
         _defect_count(zip_id)
     if not cells:
@@ -679,6 +688,29 @@ def _quad(cells):
             continue
         tile.paste(cell, ((i % 2) * cw, (i // 2) * ch))
     return tile
+
+
+def _entry_cells(ents):
+    """Entry thumbnails that are ALREADY encoded, as images; [] if any is missing.
+
+    A zip's 2x2 needs four pictures. When its entries have been encoded (the zip was
+    scanned or opened), those are four pack reads; when one is missing the caller
+    reads the archive instead, because a mosaic with a hole in it reads as a broken
+    archive rather than as a tile still being built.
+    """
+    cells = []
+    for er in ents:
+        if er["thumb_state"] != "ready" or not er["pack_id"]:
+            return []
+        prow = one("SELECT path FROM thumb_pack WHERE id=?", (er["pack_id"],))
+        if not prow:
+            return []
+        try:
+            blob = packs.item(prow["path"], er["name"])
+            cells.append(Image.open(io.BytesIO(blob)).convert("RGB"))
+        except (packs.PackError, OSError, KeyError):
+            return []
+    return cells
 
 
 def _child_thumb(row, kind):
