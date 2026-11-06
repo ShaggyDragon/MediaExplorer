@@ -31,14 +31,30 @@ import os
 import secrets
 import time
 
-from .db import meta_get, meta_set
+from .db import exec_many, meta_get, meta_set, one
 
 COOKIE = "mx_auth"
 # No lifetime on the cookie on purpose (owner, 2026-11): a *session* cookie, so it dies
 # with the browser instead of sitting valid for a month. Closing a tab cannot end it --
-# the server never sees that -- and the browser can restore session cookies on restart,
-# which is why the password remains the thing that really ends a session (changing it
-# invalidates every outstanding cookie at once).
+# the server never sees that -- and browsers *restore* session cookies on restart
+# ("continue where you left off"), so a cold boot used to come back logged in. The real
+# limit is therefore server-side and time-based: a session must be USED within
+# MX_SESSION_IDLE_MIN minutes (default 30) or the password is asked again (v1.4.2).
+IDLE_DEFAULT_MIN = 30.0
+
+
+def idle_seconds():
+    """How long a session may sit unused before the password is asked again.
+
+    MX_SESSION_IDLE_MIN overrides the default; 0 or a negative value switches the
+    timeout off entirely (the cookie is then the only limit, as before v1.4.2).
+    """
+    raw = os.environ.get("MX_SESSION_IDLE_MIN")
+    try:
+        mins = float(raw) if raw not in (None, "") else IDLE_DEFAULT_MIN
+    except (TypeError, ValueError):
+        mins = IDLE_DEFAULT_MIN
+    return max(0.0, mins) * 60.0
 
 
 class FixedByEnvironment(Exception):
@@ -114,6 +130,7 @@ def set_auth(on, password=None):
         meta_set("auth_hash", _hash(password, _salt()) if str(password).strip() else "")
     meta_set("auth_enabled", "1" if on else "0")
     _state(force=True)
+    end_all_sessions()          # the token changes with the password; drop the rows too
     return enabled()
 
 
@@ -139,10 +156,78 @@ def cookie_ok(value):
 
 
 def check(request):
-    """True when this request carries a valid session cookie."""
+    """True when this request carries a valid, recently-used session cookie."""
     if not enabled():
         return True
-    return cookie_ok(request.cookies.get(COOKIE))
+    value = request.cookies.get(COOKIE)
+    if not cookie_ok(value):
+        return False
+    return session_alive(value)
+
+
+# ---- sessions ------------------------------------------------------------
+# The cookie says *who* (a keyed digest of the password); the table says *when it was
+# last used*. Rows are keyed by a hash of the cookie value, so the database never holds
+# anything that could be replayed as a login.
+
+_touched = {}       # in-memory throttle: at most one last_seen write per session per minute
+
+
+def _session_tok(value):
+    return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
+
+
+def start_session(value):
+    """Record a successful login. Prunes rows that are already unusable."""
+    if not value:
+        return
+    now = time.time()
+    ttl = idle_seconds()
+    exec_many("INSERT OR REPLACE INTO auth_session(tok, last_seen) VALUES(?,?)",
+              (_session_tok(value), now))
+    _touched[_session_tok(value)] = now
+    if ttl > 0:
+        exec_many("DELETE FROM auth_session WHERE last_seen < ?", (now - ttl,))
+
+
+def end_session(value):
+    if value:
+        exec_many("DELETE FROM auth_session WHERE tok=?", (_session_tok(value),))
+        _touched.pop(_session_tok(value), None)
+
+
+def end_all_sessions():
+    """A password change must not leave a live session behind."""
+    exec_many("DELETE FROM auth_session")
+    _touched.clear()
+
+
+def session_alive(value):
+    """Has this cookie's session been used inside the idle window?
+
+    Every authenticated request counts as use, and the app's own `/api/config` poll
+    (once a minute while a tab is open) is enough to keep an idle-looking tab alive --
+    so the timeout measures "nothing was connected", not "nobody clicked"."""
+    ttl = idle_seconds()
+    if ttl <= 0:
+        return True                     # timeout switched off
+    now = time.time()
+    tok = _session_tok(value)
+    row = one("SELECT last_seen FROM auth_session WHERE tok=?", (tok,))
+    if row is None:
+        return False                    # logged out, expired, or from before v1.4.2
+    try:
+        seen = float(row["last_seen"] or 0)
+    except (TypeError, ValueError):
+        seen = 0.0
+    if now - seen > ttl:
+        exec_many("DELETE FROM auth_session WHERE tok=?", (tok,))
+        _touched.pop(tok, None)
+        return False
+    if now - _touched.get(tok, 0.0) > 60.0:     # one write a minute, not one per request
+        exec_many("UPDATE auth_session SET last_seen=? WHERE tok=?", (now, tok))
+        _touched[tok] = now
+    return True
 
 
 def public_path(path):

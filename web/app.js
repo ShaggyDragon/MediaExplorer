@@ -233,6 +233,12 @@ async function buildTreeRoots() {
   const cfg = await api("/api/config");
   state.locations = cfg.locations;
   $("#app-name").textContent = cfg.name;
+  // Only a locked library has something to sign out of.
+  const out = $("#btn-logout");
+  if (out) {
+    out.hidden = !(cfg.auth && cfg.auth.enabled);
+    out.onclick = () => { location.href = "/logout"; };
+  }
   libPending = cfg.pending;
   updateBadge(null, libPending);
   const tree = $("#tree");

@@ -32,14 +32,18 @@ log = logging.getLogger("mediaexplorer")
 # went nowhere and warnings leaked out through lastResort without a timestamp. That
 # made "the client says it clicked and got a 404" invisible in `docker logs`.
 if not logging.getLogger().handlers:
+    # The date is part of every line on purpose (owner, 2026-11): a log you cannot place
+    # in time is a log you cannot compare against a scan, a reboot or a restore. %z puts
+    # the zone offset on the line so a UTC container and a local log cannot be confused.
     logging.basicConfig(level=os.environ.get("MX_LOG_LEVEL", "INFO").upper(),
                         stream=sys.stdout,
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+                        datefmt="%Y-%m-%d %H:%M:%S%z")
 log.setLevel(logging.INFO)
 
 from .info import picture_info, video_info
 from .media import (build_stats, HW_REASON, _HW_NOTE, node_abspath, video_member_bytes, POSTER_NAME,
-                    queue_durations,
+                    queue_durations, fail_reset, fail_summary, note_fail,
                     ZIP_TILE, queue_zip_tile, queue_video_poster, queue_frames,
                     queue_dir_tile, rebuild_scope, relink_orphans,
                     existing_frames, diff_dir, index_zip, zip_has_video,
@@ -81,6 +85,9 @@ def ring(rec, to_file=True):
     # richer (handler) record and drop the duplicate that lands a moment later
     key = (rec.get("status"), rec.get("path") or rec.get("req") or rec.get("src"))
     now = rec.get("ts") or time.time()
+    # every row carries its own readable local timestamp: /api/log is read by a person
+    # (or by an agent) far more often than by a machine, and an epoch float is not a date
+    rec.setdefault("at", time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)))
     if rec.get("ev") == "http_error" and key[0] and key[1]:
         prev = _dup_guard.get(key)
         if prev and abs(now - prev) < 2.0:
@@ -255,13 +262,15 @@ async def login_submit(request: Request):
     # the only place the cookie is ever set.
     resp.set_cookie(auth.COOKIE, auth.token(), path="/",
                     httponly=True, samesite="lax", secure=auth.secure_for(request))
+    auth.start_session(auth.token())      # the cookie alone is not the session any more
     log.info("auth: unlocked (%s)", request.client.host if request.client else "?")
     return resp
 
 
 @app.get("/logout", include_in_schema=False)
-def logout():
+def logout(request: Request):
     from . import auth
+    auth.end_session(request.cookies.get(auth.COOKIE))   # kill the row, not just the cookie
     resp = RedirectResponse("/login", status_code=303)
     resp.delete_cookie(auth.COOKIE, path="/")
     return resp
@@ -1573,7 +1582,8 @@ def _scan_event(msg, **extra):
     history is readable from the app itself."""
     log.info("%s", msg)
     try:
-        _client_log.append({"ev": "scan", "msg": msg, "ts": time.time(), **extra})
+        _client_log.append({"ev": "scan", "msg": msg, "ts": time.time(),
+                            "at": time.strftime("%Y-%m-%d %H:%M:%S"), **extra})
     except Exception:
         pass
 
@@ -1587,6 +1597,7 @@ def _safe_tile(kind, tid):
             gen_dir_tile(tid, force=True)
     except Exception as e:
         log.warning("tile %s %s failed: %s", kind, tid, e)
+        note_fail(f"{kind} {tid}")
 
 
 def _scan_label(lrow, parent):
@@ -1641,6 +1652,8 @@ def _run_scan(scans, include_zips=False, why="button"):
     the same work in every folder of the subtree, breadth first, so a file dropped
     anywhere below is picked up in one go."""
     global _scan_thread
+    t_job = time.time()
+    fail_reset()                       # this job's failures, for its closing line
     with _scan_lock:
         scan_state.update(running=True, phase="discover", folders=0,
                           thumb_total=0, thumb_done=0,
@@ -1794,10 +1807,21 @@ def _run_scan(scans, include_zips=False, why="button"):
         if futs:
             time.sleep(0.4)
     # No filmstrip pre-build here: posters are made by the thumbs phase above, and a
-    # hover filmstrip is 9x a poster's cost for one tile nobody has hovered yet.
+    # hover filmstrip is 9x a poster's cost for a tile nobody has hovered yet.
     # On-demand only (hover, or right-click "Build filmstrips").
     with _scan_lock:
+        done_total = scan_state.get("thumb_done") or 0
         scan_state.update(phase="idle", running=False)
+    # The outcome line: what the job actually achieved, how long it took, how much of it
+    # failed. Without this, a scan that lost three thumbnails left three warnings and no
+    # answer to "did it finish?" (owner asked for scan results + errors, v1.4.2).
+    n_fail, first_fail = fail_summary()
+    _scan_event(
+        f"Scan done in {time.time() - t_job:.1f}s: {len(scans)} folder"
+        f"{'' if len(scans) == 1 else 's'}, {done_total} of {total_thumbs} thumbnails built"
+        f"{f', {len(zip_ids)} zip' + ('' if len(zip_ids) == 1 else 's') + ' re-read' if zip_ids else ''}"
+        f", {n_fail} failed{f' ({first_fail})' if n_fail else ''}{_why_tag(why)}",
+        folders=len(scans), thumbs=done_total, failed=n_fail, why=why)
     _scan_thread = None
 
 

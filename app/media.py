@@ -1451,6 +1451,31 @@ def queue_pending_for_subtree(loc_id, parent_id):
     return len(ids)
 
 
+# ---------------------------------------------------------------- job telemetry
+# A scan that ends with three dead thumbnails used to leave three warnings and no
+# outcome: nothing said "this job finished, this is what it managed, this is how much
+# failed". Workers bump this counter and the job's last line reports it (v1.4.2).
+
+FAIL = {"n": 0, "first": []}
+
+
+def fail_reset():
+    FAIL["n"] = 0
+    FAIL["first"].clear()
+
+
+def note_fail(what):
+    """Count one failed item, keeping the first few names for the summary line."""
+    FAIL["n"] += 1
+    if len(FAIL["first"]) < 3:
+        FAIL["first"].append(str(what)[:80])
+
+
+def fail_summary():
+    """(count, 'a.jpg, b.jpg, c.jpg') for the job's closing line."""
+    return FAIL["n"], ", ".join(FAIL["first"])
+
+
 # ---------------------------------------------------------------- zips
 
 def index_zip(zip_id):
@@ -1583,10 +1608,32 @@ def _defect_clear_if_any(zip_id, entry):
 
 
 def _defect_count(zip_id):
-    """Refresh nodes.bad_count after defects were added or cleared for this zip."""
+    """Refresh nodes.bad_count after defects were added or cleared for this zip.
+
+    Also the one place that says, in the log, that an archive's damage *changed* -- a
+    line per zip per change, not per entry: the detail is rows in zip_defect, and the
+    log is read to answer "which zips went bad, and when"."""
     row = one("SELECT COUNT(*) c FROM zip_defect WHERE zip_id=?", (zip_id,))
     n = row["c"] if row is not None else 0
+    prev = one("SELECT name, rel, COALESCE(bad_count, 0) b FROM nodes WHERE id=?", (zip_id,))
     exec_many("UPDATE nodes SET bad_count=? WHERE id=?", (n, zip_id))
+    try:
+        was = int(prev["b"]) if prev is not None else 0
+        if prev is not None and n != was:
+            label = f"{prev['rel'] or prev['name']}"
+            if n:
+                first = one("SELECT entry, reason FROM zip_defect WHERE zip_id=? AND entry<>''"
+                            " ORDER BY entry LIMIT 1", (zip_id,))
+                if first is not None:
+                    log.warning("zip %s: %d unreadable entr%s (first: %s -- %s)", label, n,
+                                "y" if n == 1 else "ies", first["entry"], first["reason"])
+                else:
+                    log.warning("zip %s: archive unreadable (%d flag%s)", label, n,
+                                "" if n == 1 else "s")
+            else:
+                log.info("zip %s: damage flags cleared (the archive reads clean again)", label)
+    except Exception as e:                       # telemetry must never break a scan
+        log.warning("zip %s: defect summary failed: %s", zip_id, e)
     return n
 
 

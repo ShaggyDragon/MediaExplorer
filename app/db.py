@@ -194,6 +194,12 @@ def _init():
     )
     """)
     _conn.execute("""
+    CREATE TABLE IF NOT EXISTS auth_session(
+      tok TEXT PRIMARY KEY,               -- sha256 of the cookie value, never the cookie
+      last_seen REAL NOT NULL             -- last authenticated request (idle timeout)
+    )
+    """)  # type: ignore[union-attr]
+    _conn.execute("""
     CREATE TABLE IF NOT EXISTS thumb_pack(
         id INTEGER PRIMARY KEY,
         loc_id INTEGER NOT NULL,
