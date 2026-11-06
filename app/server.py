@@ -1595,16 +1595,36 @@ def _scan_event(msg, **extra):
         pass
 
 
-def _safe_tile(kind, tid):
+def _safe_tile(kind, tid, cascade=True):
     """Recompose one 4-up mosaic; a broken source must not kill the scan."""
     try:
         if kind == "zip":
             gen_zip_tile(tid, force=True)
         else:
-            gen_dir_tile(tid, force=True)
+            gen_dir_tile(tid, force=True, cascade=cascade)
     except Exception as e:
         log.warning("tile %s %s failed: %s", kind, tid, e)
         note_fail(f"{kind} {tid}")
+
+
+def _node_depth(node_id, memo=None):
+    """How deep a node sits inside its location: a location's direct child is 1.
+
+    Used to compose folder faces bottom up, because a face is made of its children's
+    pictures -- sharing the parent chain through `memo` keeps a subtree walk at one
+    query per distinct folder instead of one per tile.
+    """
+    memo = {} if memo is None else memo
+    chain, cur = [], node_id
+    while cur is not None and cur not in memo and len(chain) < 64:
+        chain.append(cur)
+        r = one("SELECT parent_id FROM nodes WHERE id=?", (cur,))
+        cur = r["parent_id"] if r else None
+    base = memo.get(cur, 0) if cur is not None else 0
+    for nid in reversed(chain):
+        base += 1
+        memo[nid] = base
+    return memo.get(node_id, 0)
 
 
 def _scan_label(lrow, parent):
@@ -1792,7 +1812,27 @@ def _run_scan(scans, include_zips=False, why="button"):
     # image it will encode, a zip for every entry it will rebuild (plus its own 4-up).
     # Counting futures made "3 folders + 9 zips" read as "12 thumbnails" -- the
     # number tracked how many archives were opened, not how much work was left.
-    total_thumbs = (sum(job_work) + sum(w for _, w in vids)
+    # One job per target, and no id 0: a folder reached both as a child and as the
+    # parent of a scanned folder appeared twice in this list, so its face was
+    # composed and published twice for nothing.
+    tiles_all = [t for t in dict.fromkeys(tiles_all) if t[1] > 0]
+    memo = {}
+    tiles_all.sort(key=lambda t: -_node_depth(t[1], memo))
+    # The levels ABOVE the scanned folders are stale too -- their faces are made of
+    # the faces about to be rebuilt -- but nothing cascades to them now, so collect
+    # each ancestor once (deepest first) and refresh it on the way out. Without this,
+    # scanning a subfolder left its ancestors showing the old child picture.
+    scope = {i for k, i in tiles_all if k == "dir"}
+    above = []
+    for d in sorted(scope, key=lambda x: -_node_depth(x, memo)):
+        r = node_by_id(d)
+        p = r["parent_id"] if r else None
+        while p and p not in scope and p not in above:
+            above.append(p)
+            rp = node_by_id(p)
+            p = rp["parent_id"] if rp else None
+    above.sort(key=lambda x: -_node_depth(x, memo))
+    total_thumbs = (sum(job_work) + sum(w for _, w in vids) + len(above)
                     + len(tiles_all) + sum(zip_work))
     with _scan_lock:
         scan_state.update(phase="thumbs", folders=len(scans),
@@ -1800,13 +1840,23 @@ def _run_scan(scans, include_zips=False, why="button"):
                           work_total=max(grand_total + sum(zip_work),
                                          scan_state.get("work_total") or 0))
     from .media import _executor, _safe_folder_pack, ensure_video_poster
-    futs = [(_executor.submit(_safe_folder_pack, loc_id, pid), w)
+
+    def _drain(fs):
+        """Wait for a phase, crediting each finished job's weight to the countdown."""
+        while fs:
+            done_now = [f for f in fs if f[0].done()]
+            fs = [f for f in fs if not f[0].done()]
+            with _scan_lock:
+                scan_state["thumb_done"] += sum(w for _, w in done_now)
+            if fs:
+                time.sleep(0.4)
+
+    futs = [(_executor.submit(_safe_folder_pack, loc_id, pid, False, False), w)
             for (loc_id, pid), w in zip(jobs, job_work)]
     # posters, not filmstrips: one frame per video is the default tile state, and a
     # filmstrip is 9x the decode work for a tile nobody has hovered yet. Hover and
     # right-click "Build filmstrips" make the strips on demand.
     futs += [(_executor.submit(ensure_video_poster, vid), w) for vid, w in vids]
-    futs += [(_executor.submit(_safe_tile, kind, tid), 1) for kind, tid in tiles_all]
     if zip_ids:
         # "Scan all subfolders" stopped at folders, so a zip's own entries were never
         # refreshed by a subtree walk; this is the version that goes into them too.
@@ -1821,13 +1871,18 @@ def _run_scan(scans, include_zips=False, why="button"):
                 f"{'' if len(scans) == 1 else 's'}, {total_thumbs} thumbnail"
                 f"{'' if total_thumbs == 1 else 's'} queued{_why_tag(why)}",
                 folders=len(scans), thumbs=total_thumbs, why=why)
-    while futs:
-        done_now = [f for f in futs if f[0].done()]
-        futs = [f for f in futs if not f[0].done()]
-        with _scan_lock:
-            scan_state["thumb_done"] += sum(w for _, w in done_now)
-        if futs:
-            time.sleep(0.4)
+    _drain(futs)
+    # Folder faces LAST, and deepest first. A face is a 2x2 of its children's
+    # thumbnails, so composing one before its children exist falls back to decoding
+    # the originals and then composing again every time a child lands -- on a
+    # four-level tree the faces were published 14 times for three folders. Once every
+    # thumbnail exists each face is four pack reads and one encode, so the layer is
+    # made ONCE, bottom up, and the level being viewed settles last instead of
+    # flickering. Same pass then refreshes the levels above the scope.
+    _drain([(_executor.submit(_safe_tile, kind, tid, False), 1)
+            for kind, tid in tiles_all])
+    if above:
+        _drain([(_executor.submit(_safe_tile, "dir", d, False), 1) for d in above])
     # No filmstrip pre-build here: posters are made by the thumbs phase above, and a
     # hover filmstrip is 9x a poster's cost for a tile nobody has hovered yet.
     # On-demand only (hover, or right-click "Build filmstrips").

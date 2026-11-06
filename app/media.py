@@ -836,7 +836,7 @@ def dir_samples(dir_abs, limit=4, depth=1):
     return out[:limit]
 
 
-def gen_dir_tile(dir_id, force=False):
+def gen_dir_tile(dir_id, force=False, cascade=True):
     """A folder's own tile: the same 2x2 mosaic a zip gets, so a folder shows its
     content instead of a glyph. Stored in the PARENT's pack under the folder's
     name, which is exactly where an image's own thumbnail already lives."""
@@ -865,10 +865,12 @@ def gen_dir_tile(dir_id, force=False):
         return 0
     events.publish_thumb(dir_id, blob, int(float(row["mtime"] or 0) * 1000),
                          parent=pid)
-    if pid:
+    if pid and cascade:
         # the parent's mosaic is made of its children's pictures, so it is stale the
         # moment one of them is built. queue_dir_tile dedupes, so 161 children cost
-        # one pending rebuild rather than 161.
+        # one pending rebuild rather than 161. A scan that already composed every
+        # face in the subtree passes cascade=False and refreshes the levels above the
+        # scope once itself, instead of each child re-queueing its parent.
         queue_dir_tile(pid, force=True)
     return 1
 
@@ -1240,7 +1242,7 @@ def _safe_gen_zip_pack(zip_id, front=False):
         events.publish_done(zip_id, "zip")
 
 
-def _safe_folder_pack(loc_id, parent_id, front=False):
+def _safe_folder_pack(loc_id, parent_id, front=False, cascade=True):
     try:
         gen_folder_thumbs(loc_id, parent_id, front=front)
     except Exception:
@@ -1249,7 +1251,10 @@ def _safe_folder_pack(loc_id, parent_id, front=False):
         # end of a build: the page re-lists this folder once, which picks up
         # thumbs it never saw an event for and files added since it rendered
         events.publish_done(parent_id, "dir")
-        if parent_id is not None:
+        # A face is made of its children, so a build stales its parent's -- right for
+        # one folder at a time, wrong for a scan, which composes the whole face layer
+        # itself, bottom up, once (cascade=False here, see _run_scan).
+        if parent_id is not None and cascade:
             queue_dir_tile(parent_id, force=True)   # its face is made of these
 
 
